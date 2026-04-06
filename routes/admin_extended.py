@@ -24,6 +24,7 @@ from flask import Blueprint, request, jsonify, make_response
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import func
 from werkzeug.security import generate_password_hash
+from routes.auth_reset import send_account_deactivated_email, send_account_reactivated_email
 
 from models import db, User, Profile, AnalysisHistory
 
@@ -71,6 +72,8 @@ def deactivate_user(user_id: str):
     u = User.query.get_or_404(user_id)
     u.is_active = False
     db.session.commit()
+    p = Profile.query.filter_by(user_id=u.id).first()
+    send_account_deactivated_email(u.email, p.full_name if p else None)
     _audit(admin.id, "deactivate_user", user_id, u.email)
     return jsonify({"message": f"User {u.email} deactivated."})
 
@@ -85,6 +88,8 @@ def activate_user(user_id: str):
     u = User.query.get_or_404(user_id)
     u.is_active = True
     db.session.commit()
+    p = Profile.query.filter_by(user_id=u.id).first()
+    send_account_reactivated_email(u.email, p.full_name if p else None)
     _audit(admin.id, "activate_user", user_id, u.email)
     return jsonify({"message": f"User {u.email} activated."})
 
