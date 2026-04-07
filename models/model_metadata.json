@@ -1,0 +1,167 @@
+{
+  "crop_classes": [
+    "banana",
+    "beans",
+    "bell_pepper",
+    "blackgram",
+    "cabbage",
+    "cassava",
+    "chickpea",
+    "chili",
+    "coconut",
+    "coffee",
+    "cotton",
+    "cowpea",
+    "cucumber",
+    "eggplant",
+    "groundnuts",
+    "guava",
+    "kidneybeans",
+    "lentil",
+    "maize",
+    "mango",
+    "millet",
+    "mungbean",
+    "muskmelon",
+    "okra",
+    "onion",
+    "orange",
+    "papaya",
+    "peas",
+    "pigeonpeas",
+    "potato",
+    "pumpkin",
+    "rice",
+    "sesame",
+    "sorghum",
+    "soybean",
+    "sugarcane",
+    "sunflower",
+    "sweetpotato",
+    "tobacco",
+    "tomato",
+    "watermelon"
+  ],
+  "fert_classes": [
+    "Balanced Npk Fertilizer",
+    "Compost",
+    "Dap",
+    "General Purpose Fertilizer",
+    "Gypsum",
+    "Lime",
+    "Muriate Of Potash",
+    "Organic Fertilizer",
+    "Urea",
+    "Water Retaining Fertilizer"
+  ],
+  "soil_types": [
+    "Acidic Soil",
+    "Alkaline Soil",
+    "Loamy Soil",
+    "Neutral Soil",
+    "Peaty Soil"
+  ],
+  "crop_types_fert": [
+    "Adzuki Beans",
+    "Apple",
+    "Banana",
+    "Black Gram",
+    "Chickpea",
+    "Cotton",
+    "Grapes",
+    "Ground Nut",
+    "Kidney Beans",
+    "Lentil",
+    "Maize",
+    "Mango",
+    "Millet",
+    "Moth Beans",
+    "Mung Bean",
+    "Muskmelon",
+    "Orange",
+    "Papaya",
+    "Peas",
+    "Pigeon Peas",
+    "Pomegranate",
+    "Rice",
+    "Sugarcane",
+    "Tobacco",
+    "Watermelon",
+    "Wheat"
+  ],
+  "crop_model_name": "Random Forest",
+  "fert_model_name": "Random Forest",
+  "training_rows_crop": 30499,
+  "training_rows_fert": 5410,
+  "crop_features": [
+    "n",
+    "p",
+    "k",
+    "temperature",
+    "humidity",
+    "ph",
+    "rainfall"
+  ],
+  "fert_features": [
+    "Temperature",
+    "Moisture",
+    "Rainfall",
+    "PH",
+    "Nitrogen",
+    "Phosphorous",
+    "Potassium",
+    "Soil_enc",
+    "Crop_enc"
+  ],
+  "datasets_used": {
+    "A": "Crop_recommendation.csv (2200 rows, 22 classes)",
+    "B": "crop_recommendation_dataset.csv (30530 rows, 80 classes)",
+    "C": "Crop_Recm_Data.csv (10470 rows, 22 classes)",
+    "D": "Synthetic (900 rows, 9 Malawi crops, weighted 3\u00d7)",
+    "fert": "fertlizer_recommendation_dataset.csv (5410 rows, 10 classes)"
+  },
+  "crop_model_results": {
+    "Logistic Regression": {
+      "f1": 58.78,
+      "acc": 60.59,
+      "cv": 52.56
+    },
+    "Decision Tree": {
+      "f1": 91.98,
+      "acc": 91.98,
+      "cv": 81.96
+    },
+    "Random Forest": {
+      "f1": 94.69,
+      "acc": 94.66,
+      "cv": 85.24
+    },
+    "Gradient Boosting": {
+      "f1": 94.43,
+      "acc": 94.43,
+      "cv": 84.95
+    }
+  },
+  "fert_model_results": {
+    "Logistic Regression": {
+      "f1": 72.12,
+      "acc": 75.51,
+      "cv": 71.72
+    },
+    "Decision Tree": {
+      "f1": 83.02,
+      "acc": 82.99,
+      "cv": 81.91
+    },
+    "Random Forest": {
+      "f1": 87.73,
+      "acc": 88.45,
+      "cv": 87.37
+    },
+    "Gradient Boosting": {
+      "f1": 85.05,
+      "acc": 85.95,
+      "cv": 83.84
+    }
+  }
+}

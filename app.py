@@ -22,6 +22,7 @@ from routes.admin_extended import admin_ext_bp
 from routes.auth      import auth_bp
 from routes.profiles  import profiles_bp
 from routes.analysis  import analysis_bp
+from routes.auth_reset import reset_bp
 
 
 logging.basicConfig(
@@ -83,16 +84,16 @@ def create_app(config_object=Config) -> Flask:
     def expired_token(jwt_header, jwt_payload):
         return jsonify({"error": "Token has expired. Please log in again."}), 401
 
-    # ── Blueprints ─────────────────────────────────────────────────────────────
     app.register_blueprint(recommend_bp, url_prefix="/api")
     app.register_blueprint(rainfall_bp,  url_prefix="/api")
     app.register_blueprint(chat_bp,      url_prefix="/api")
 
-    app.register_blueprint(auth_bp)       # /auth/*
-    app.register_blueprint(profiles_bp)   # /profiles/*
-    app.register_blueprint(analysis_bp)   # /analysis/*
-    app.register_blueprint(admin_bp)      # /admin/*
-    app.register_blueprint(admin_ext_bp)   # /admin/* (extended)  ← must be inside create_app
+    app.register_blueprint(auth_bp)       
+    app.register_blueprint(profiles_bp)   
+    app.register_blueprint(analysis_bp)   
+    app.register_blueprint(admin_bp)      
+    app.register_blueprint(admin_ext_bp) 
+    app.register_blueprint(reset_bp)  
 
     @app.route("/")
     def home():

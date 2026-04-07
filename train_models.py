@@ -266,7 +266,7 @@ print("\n  💾 Saved: best_crop_model.pkl | crop_scaler.pkl | crop_label_encode
 
 
 
-#  MODEL 2 — FERTILIZER PREDICTION
+# FERTILIZER PREDICTION
 
 banner("Model 2 — Fertilizer Prediction")
 
@@ -396,3 +396,7 @@ print(f"""
 
   Next step:  python app.py  →  http://localhost:5000
 """)
+
+
+
+
