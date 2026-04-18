@@ -11,7 +11,6 @@ from flask import Blueprint, request, jsonify
 from data.crop_data            import CROP_STATISTICS, MALAWI_CROP_MAP
 from data.rainfall_data        import MALAWI_DISTRICTS
 from data.climate_zones        import CLIMATE_ZONES, ZONE_CROPS, ZONE_DESCRIPTIONS, DEFAULT_ZONE
-from data.crop_fertilizer_map  import CROP_FERTILIZER
 from data.district_coordinates import DISTRICT_COORDINATES
 from data.land_use_map         import LAND_USE_MAP, LAND_USE_LABELS
 
@@ -20,11 +19,11 @@ from utils.algorithms import (
     get_band_description,
     get_soil_alerts,
     assess_soil,
+    adjust_for_rainfall,
+    generate_fertilizer_plan,
 )
 from utils.weather_api        import get_live_rainfall
 from utils.satellite_rainfall import get_satellite_annual_history
-from utils.yield_predictor    import predict_yield
-from utils.pest_predictor     import predict_pest_risks, get_overall_risk_summary
 from utils.rotation_advice    import get_rotation_advice, get_general_rotation_tip
 
 recommend_bp = Blueprint("recommend", __name__)
@@ -36,7 +35,9 @@ crop_scaler  = pickle.load(open(os.path.join(BASE, "models/crop_scaler.pkl"),   
 crop_encoder = pickle.load(open(os.path.join(BASE, "models/crop_label_encoder.pkl"), "rb"))
 
 
-
+# ─────────────────────────────────────────────────────────────────────────────
+#  CROP NAME RESOLUTION
+# ─────────────────────────────────────────────────────────────────────────────
 
 _BUILT_IN_CROP_MAP = {
     "banana":      "Banana",      "blackgram":   "Black Gram",
@@ -69,6 +70,179 @@ def _resolve_display_name(crop_raw: str) -> str:
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  FERTILIZER PLAN BUILDER
+#  Merges algorithm output (adjust_for_rainfall + generate_fertilizer_plan)
+#  into the shape the frontend FertilizerPlan interface expects.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _infer_soil_type(ph: float, organic_matter: float, moisture: float) -> str:
+    """
+    Simple heuristic to infer a soil-type label from available inputs.
+    Ideally the frontend would pass soil_type directly — add it as an
+    optional field if you extend the form later.
+    """
+    if ph < 5.5 and organic_matter > 3.0:
+        return "peaty"
+    if ph > 7.5:
+        return "alkaline"
+    if ph < 5.5:
+        return "acidic"
+    if moisture > 60:
+        return "clay"
+    if moisture < 25:
+        return "sandy"
+    return "loamy"
+
+
+def _build_fertilizer_plan(
+    crop_raw:      str,
+    crop_display:  str,
+    nitrogen:      float,
+    phosphorus:    float,
+    potassium:     float,
+    ph:            float,
+    organic:       float,
+    moisture:      float,
+    annual_mm:     float,
+    rainfall_band: str,
+    rainfall_cat:  str,
+) -> dict:
+    """
+    Generate a rich fertilizer plan by combining:
+      1. adjust_for_rainfall  — rainfall/crop/pH/soil-aware NPK timing plan
+      2. generate_fertilizer_plan — deficiency-corrective items from soil test
+
+    Returns a dict matching the frontend FertilizerPlan interface:
+      {
+        items:         [ { type, applicationRate, timing, notes, alternative, confidence, products } ]
+        warnings:      [ str ]
+        organicAdvice: str
+        confidence:    { score, label, message }
+        # legacy flat fields kept for backward compat
+        basal:           str | None
+        basal_rate:      str | None
+        topdress:        str | None
+        topdress_rate:   str | None
+        topdress_timing: str | None
+        notes:           str | None
+      }
+    """
+    soil_type = _infer_soil_type(ph, organic, moisture)
+
+    # ── 1. Rainfall/crop/pH-aware application plan ────────────────────────
+    rain_plan = adjust_for_rainfall(
+        annual_mm  = annual_mm,
+        crop       = crop_raw,
+        ph         = ph,
+        soil_type  = soil_type,
+    )
+
+    # ── 2. Deficiency-corrective plan from soil-test values ───────────────
+    deficiency_items = generate_fertilizer_plan(
+        N             = nitrogen,
+        P             = phosphorus,
+        K             = potassium,
+        ph            = ph,
+        organic_matter= organic,
+        rainfall_cat  = rainfall_cat,
+        soil_type     = soil_type,
+        crop          = crop_raw,
+    )
+
+    # ── 3. Convert rain_plan["plan"] steps → frontend items ──────────────
+    rain_items = []
+    for step in rain_plan.get("plan", []):
+        products   = step.get("products", [])
+        rate_str   = ", ".join(products) if products else "—"
+        rain_items.append({
+            "type":            step.get("action", "Apply fertilizer"),
+            "applicationRate": rate_str,
+            "timing":          step.get("timing", ""),
+            "notes":           step.get("note", ""),
+            "alternative":     None,
+            "confidence":      None,
+            "products":        products,
+        })
+
+    # ── 4. Convert deficiency items → frontend items ──────────────────────
+    def_items = []
+    for d in deficiency_items:
+        def_items.append({
+            "type":            d.get("type", ""),
+            "applicationRate": d.get("applicationRate", ""),
+            "timing":          d.get("timing", ""),
+            "notes":           d.get("notes", ""),
+            "alternative":     d.get("alternative"),
+            "confidence":      d.get("confidence"),
+            "products":        [d.get("type", "")],
+        })
+
+    # ── 5. Merge: application plan first, then any deficiency corrections
+    #        that aren't already covered by the application plan
+    merged_items = rain_items[:]
+
+    rain_product_types = {
+        item["type"].lower()[:30] for item in rain_items
+    }
+
+    for d_item in def_items:
+        # Skip lime/sulphur/organic-matter items — these are standalone
+        # corrections that should always surface
+        is_correction = any(
+            kw in d_item["type"].lower()
+            for kw in ("lime", "sulphur", "compost", "manure", "maintenance")
+        )
+        already_covered = d_item["type"].lower()[:30] in rain_product_types
+
+        if is_correction or not already_covered:
+            merged_items.append(d_item)
+
+    # ── 6. Collect warnings from both sources ─────────────────────────────
+    all_warnings = list(rain_plan.get("warnings", []))
+
+    # ── 7. Legacy flat fields (populated from the first two plan steps) ───
+    basal           = None
+    basal_rate      = None
+    topdress        = None
+    topdress_rate   = None
+    topdress_timing = None
+    notes_legacy    = rain_plan.get("cropNote") or None
+
+    for step in rain_plan.get("plan", []):
+        products = step.get("products", [])
+        timing   = step.get("timing", "").lower()
+
+        if "planting" in timing and basal is None:
+            basal      = step.get("action", "")
+            basal_rate = ", ".join(products) if products else None
+
+        elif "top-dressing 1" in timing or "top-dress" in step.get("timing", "").lower():
+            if topdress is None:
+                topdress        = step.get("action", "")
+                topdress_rate   = ", ".join(products) if products else None
+                topdress_timing = step.get("timing", "")
+
+    return {
+        # Rich new fields
+        "items":         merged_items,
+        "warnings":      all_warnings,
+        "organicAdvice": rain_plan.get("organicAdvice", ""),
+        "confidence":    rain_plan.get("confidence"),
+
+        # Legacy flat fields (for backward compat / PDF report)
+        "basal":           basal,
+        "basal_rate":      basal_rate,
+        "topdress":        topdress,
+        "topdress_rate":   topdress_rate,
+        "topdress_timing": topdress_timing,
+        "notes":           notes_legacy,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  ML PREDICTION
+# ─────────────────────────────────────────────────────────────────────────────
 
 def predict_crop_ml(N, P, K, temperature, humidity, ph, annual_rainfall_mm):
     """
@@ -79,7 +253,11 @@ def predict_crop_ml(N, P, K, temperature, humidity, ph, annual_rainfall_mm):
     features_scaled = crop_scaler.transform(features)
     raw_probs       = crop_model.predict_proba(features_scaled)[0]
 
-    pairs = sorted(zip(crop_encoder.classes_, raw_probs), key=lambda x: x[1], reverse=True)
+    pairs = sorted(
+        zip(crop_encoder.classes_, raw_probs),
+        key=lambda x: x[1],
+        reverse=True,
+    )
 
     return [
         {
@@ -110,20 +288,21 @@ def rescale_confidences(predictions: list) -> list:
     return predictions
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  FILTERING
+# ─────────────────────────────────────────────────────────────────────────────
 
 TARGET = 5
 
 def _apply_filters(all_predictions: list, allowed_zone: set, allowed_use: set) -> list:
     """
     Progressively relax filters until we have TARGET crops.
-    Always returns up to TARGET predictions — never fewer unless the
-    model itself returns fewer classes (won't happen with 22+ classes).
+    Always returns up to TARGET predictions.
     """
     selected  = []
     seen_raws = set()
 
     def _fill(candidates: list, pool: set) -> None:
-        """Add predictions from `candidates` whose crop_raw is in `pool`."""
         for p in candidates:
             if len(selected) >= TARGET:
                 return
@@ -132,17 +311,18 @@ def _apply_filters(all_predictions: list, allowed_zone: set, allowed_use: set) -
                 selected.append(p)
                 seen_raws.add(raw)
 
-   
+    # Pass 1 — zone ∩ land-use
     _fill(all_predictions, allowed_zone & allowed_use)
 
-    
+    # Pass 2 — land-use only
     if len(selected) < TARGET:
         _fill(all_predictions, allowed_use - allowed_zone)
 
-    
+    # Pass 3 — zone only
     if len(selected) < TARGET:
         _fill(all_predictions, allowed_zone - allowed_use)
 
+    # Pass 4 — any remaining (by ML confidence)
     if len(selected) < TARGET:
         for p in all_predictions:
             if len(selected) >= TARGET:
@@ -155,6 +335,9 @@ def _apply_filters(all_predictions: list, allowed_zone: set, allowed_use: set) -
     return selected
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  RAINFALL RESOLUTION
+# ─────────────────────────────────────────────────────────────────────────────
 
 def resolve_rainfall(district_name: str, district: dict) -> dict:
     """
@@ -194,22 +377,25 @@ def resolve_rainfall(district_name: str, district: dict) -> dict:
         annual_confidence = 55
 
     return {
-        "annual_mm":          annual_mm,
-        "annual_source":      annual_source,
-        "annual_confidence":  annual_confidence,
-        "historical_years":   historical_years,
-        "historical_values":  historical_values,
-        "live_7day_mm":       live_7day_mm,
-        "live_daily":         live_daily,
+        "annual_mm":         annual_mm,
+        "annual_source":     annual_source,
+        "annual_confidence": annual_confidence,
+        "historical_years":  historical_years,
+        "historical_values": historical_values,
+        "live_7day_mm":      live_7day_mm,
+        "live_daily":        live_daily,
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  REASON BUILDER
+# ─────────────────────────────────────────────────────────────────────────────
 
-
-def build_reason(rank, crop_name, confidence,
-                 district_name, annual_mm, rainfall_band,
-                 land_use="food", previous_crop=""):
-
+def build_reason(
+    rank, crop_name, confidence,
+    district_name, annual_mm, rainfall_band,
+    land_use="food", previous_crop="",
+):
     rank_labels = [
         "Best choice", "Second choice", "Third choice",
         "Fourth choice", "Fifth choice",
@@ -246,7 +432,9 @@ def build_reason(rank, crop_name, confidence,
     return reason
 
 
-
+# ─────────────────────────────────────────────────────────────────────────────
+#  MAIN ROUTE
+# ─────────────────────────────────────────────────────────────────────────────
 
 @recommend_bp.route("/recommend", methods=["POST"])
 def recommend():
@@ -276,11 +464,13 @@ def recommend():
     if land_use not in LAND_USE_MAP:
         land_use = "food"
 
-    district = next((d for d in MALAWI_DISTRICTS if d["name"] == district_name), None)
+    district = next(
+        (d for d in MALAWI_DISTRICTS if d["name"] == district_name), None
+    )
     if not district:
         return jsonify({"error": f"Unknown district: {district_name}"}), 400
 
-   
+    # ── Rainfall ──────────────────────────────────────────────────────────
     rainfall_data     = resolve_rainfall(district_name, district)
     annual_mm         = rainfall_data["annual_mm"]
     annual_source     = rainfall_data["annual_source"]
@@ -300,7 +490,7 @@ def recommend():
         "Very High"
     )
 
-  
+    # ── ML prediction ─────────────────────────────────────────────────────
     all_predictions = predict_crop_ml(
         nitrogen, phosphorus, potassium,
         temperature, moisture, ph,
@@ -314,78 +504,55 @@ def recommend():
     filtered = _apply_filters(all_predictions, allowed_zone, allowed_use)
     filtered = rescale_confidences(filtered)
 
+    # ── Build crop list ───────────────────────────────────────────────────
     crops = []
     for i, pred in enumerate(filtered):
 
-        crop_name = pred["crop"]
-        crop_key  = crop_name.lower().replace(" ", "") 
+        crop_display = pred["crop"]
+        crop_raw     = pred["crop_raw"]
 
         stat = next(
             (c for c in CROP_STATISTICS
-             if _resolve_display_name(c["label"]) == crop_name
-             or c["label"] == pred["crop_raw"]),
+             if _resolve_display_name(c["label"]) == crop_display
+             or c["label"] == crop_raw),
             None,
         )
 
-        fertilizer_plan = (
-            CROP_FERTILIZER.get(crop_key)
-            or CROP_FERTILIZER.get(pred["crop_raw"])
-            or {}
-        )
-
-        yield_pred = predict_yield(
-            crop_name      = crop_key,
-            nitrogen       = nitrogen,
-            phosphorus     = phosphorus,
-            potassium      = potassium,
-            ph             = ph,
-            organic_matter = organic,
-            rainfall_band  = rainfall_band,
-        )
-
-        pest_risks      = predict_pest_risks(
-            crop_name     = crop_key,
+        # Build rich fertilizer plan from algorithms
+        fertilizer_plan = _build_fertilizer_plan(
+            crop_raw      = crop_raw,
+            crop_display  = crop_display,
+            nitrogen      = nitrogen,
+            phosphorus    = phosphorus,
+            potassium     = potassium,
+            ph            = ph,
+            organic       = organic,
+            moisture      = moisture,
+            annual_mm     = annual_mm,
             rainfall_band = rainfall_band,
-            temperature   = temperature,
-            humidity      = moisture,
+            rainfall_cat  = rainfall_category,
         )
-        risk_summary    = get_overall_risk_summary(pest_risks)
-        important_risks = [r for r in pest_risks if r["risk_score"] >= 2]
 
-        rotation_advice = get_rotation_advice(previous_crop, crop_key)
+        rotation_advice = get_rotation_advice(previous_crop, crop_raw)
 
         crops.append({
-            "crop":       crop_name,
+            "crop":       crop_display,
             "confidence": pred["confidence"],
             "score":      max(10, round(95 - i * 10)),
             "season":     stat["season"] if stat else "Oct–Apr",
             "emoji":      stat["emoji"]  if stat else "🌱",
 
             "reason": build_reason(
-                i, crop_name, pred["confidence"],
+                i, crop_display, pred["confidence"],
                 district_name, annual_mm, rainfall_band,
                 land_use, previous_crop,
             ),
 
-            "fertilizerPlan":  fertilizer_plan,
-            "rotationAdvice":  rotation_advice,
-
-            "yieldPrediction": {
-                "predicted_tha":    yield_pred["predicted_tha"],
-                "potential_tha":    yield_pred["potential_tha"],
-                "yield_category":   yield_pred["yield_category"],
-                "yield_gap_tha":    yield_pred["yield_gap_tha"],
-                "limiting_factors": yield_pred["limiting_factors"],
-                "improvement_tips": yield_pred["improvement_tips"],
-                "unit":             yield_pred["unit"],
-            },
-
-            "pestDiseaseRisk": {
-                "summary": risk_summary,
-                "risks":   important_risks,
-            },
+            "fertilizerPlan": fertilizer_plan,
+            "rotationAdvice": rotation_advice,
         })
 
+    # ── Soil summary ──────────────────────────────────────────────────────
     soil_alerts     = get_soil_alerts(nitrogen, phosphorus, potassium, ph, annual_mm)
     soil_assessment = assess_soil(nitrogen, phosphorus, potassium, ph, organic, moisture)
     rotation_tip    = get_general_rotation_tip(previous_crop)
@@ -417,6 +584,7 @@ def recommend():
             "liveDailyForecast":   live_daily,
         },
 
+        # Flat aliases kept for frontend backward compat
         "forecastedRainfall":      annual_mm,
         "rainfallSource":          annual_source,
         "rainfallBand":            rainfall_band,

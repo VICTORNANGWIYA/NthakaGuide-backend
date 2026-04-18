@@ -1,12 +1,22 @@
+"""
+utils/satellite_rainfall.py
+
+Performance fix: replaced 26 sequential NASA calls with ONE call
+covering 2000–present. Cache holds data for the entire rainy season
+(expires at end of April or end of October — whichever is next).
+"""
 
 import requests
 import logging
 import datetime
 import calendar
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-NASA_BASE = "https://power.larc.nasa.gov/api/temporal"
+NASA_BASE    = "https://power.larc.nasa.gov/api/temporal"
+HISTORY_FROM = 2000
+TIMEOUT      = 60   # single large request needs more time
 
 MONTH_NAMES = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -14,137 +24,73 @@ MONTH_NAMES = [
 ]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CACHE TIMEOUT
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _seconds_until_season_end() -> int:
+    """
+    Returns seconds until the end of the current agricultural season.
+    
+    Malawi seasons:
+      Rainy season  → Nov 1  to Apr 30  (cache until May 1)
+      Dry season    → May 1  to Oct 31  (cache until Nov 1)
+    
+    This means historical NASA data fetched in January stays cached
+    until May 1 — no unnecessary re-fetching during the same season.
+    """
+    today = datetime.date.today()
+    year  = today.year
+
+    if today.month >= 11:
+        # Nov/Dec — rainy season, expires end of April next year
+        end = datetime.date(year + 1, 5, 1)
+    elif today.month <= 4:
+        # Jan–Apr — rainy season, expires end of April this year
+        end = datetime.date(year, 5, 1)
+    else:
+        # May–Oct — dry season, expires end of October this year
+        end = datetime.date(year, 11, 1)
+
+    delta = datetime.datetime.combine(end, datetime.time.min) - \
+            datetime.datetime.now()
+    
+    # Minimum 1 hour, maximum ~6 months
+    return max(3600, int(delta.total_seconds()))
+
+
+SEASON_CACHE_TIMEOUT = _seconds_until_season_end()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INTERNAL HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _today() -> datetime.date:
     return datetime.date.today()
 
-def _current_year() -> int:
-    return _today().year
-
 def _days_in_month(year: int, month: int) -> int:
     return calendar.monthrange(year, month)[1]
 
-def _ewma_forecast(values: list, alpha: float = 0.3) -> float:
-    """EWMA on annual values list → next-year forecast."""
-    if not values:
-        return 900.0
-    ewma = float(values[0])
-    for v in values[1:]:
-        ewma = alpha * float(v) + (1 - alpha) * ewma
-   
-    if len(values) >= 3:
-        ewma_old = float(values[-3])
-        for v in values[-2:]:
-            ewma_old = alpha * float(v) + (1 - alpha) * ewma_old
-        trend = ewma - ewma_old
-        return max(200.0, round(ewma + trend * 0.5, 1))
-    return max(200.0, round(ewma, 1))
-
-
-
-
-def get_satellite_annual_history(lat: float, lon: float) -> dict | None:
-    """
-    Fetch annual rainfall totals from NASA POWER for 2000 → last full year.
-
-    NASA POWER annual endpoint returns PRECTOTCORR as mm/day annual average.
-    Multiply by 365 (or 366 for leap years) to get total mm/year.
-
-    Returns:
-        {
-          years:     [2000, 2001, ..., 2024],
-          values:    [850.2, 920.1, ...],   # mm/year
-          annual_mm: 895.3,                 # EWMA forecast for next season
-          source:    "NASA POWER Satellite (2000–2024)",
-        }
-    """
-    end_year   = _current_year() - 1
-    start_year = 2000
-
-    url = (
-        f"{NASA_BASE}/annual/point"
-        f"?parameters=PRECTOTCORR"
-        f"&community=AG"
-        f"&longitude={lon}&latitude={lat}"
-        f"&start={start_year}&end={end_year}"
-        f"&format=JSON"
-    )
-
-    try:
-        resp = requests.get(url, timeout=20)
-        resp.raise_for_status()
-        raw         = resp.json()
-        annual_data = raw["properties"]["parameter"]["PRECTOTCORR"]
-
-        years  = []
-        values = []
-
-        for key in sorted(annual_data.keys()):
-            
-            try:
-                y = int(key)
-            except ValueError:
-                continue
-
-            val_per_day = annual_data[key]
-           
-            if val_per_day is None or val_per_day < 0:
-                continue
-
-            days   = 366 if calendar.isleap(y) else 365
-            annual = round(val_per_day * days, 1)
-            years.append(y)
-            values.append(annual)
-
-        if not years:
-            logger.warning("NASA annual history: no valid data rows")
-            return None
-
-        forecast = _ewma_forecast(values)
-
-        return {
-            "years":     years,
-            "values":    values,
-            "annual_mm": forecast,
-            "source":    f"NASA POWER Satellite (2000–{years[-1]})",
-        }
-
-    except Exception as exc:
-        logger.warning("NASA annual history failed: %s", exc)
-        return None
-
-
-
-def get_satellite_monthly(lat: float, lon: float, year: int = None) -> dict | None:
-    """
-    Fetch monthly rainfall totals for a given year (default = current year).
-    Only fetches up to the last completed month to avoid partial data.
-
-    Returns:
-        {
-          monthly: [
-            {"month": "Jan", "year": 2025, "mm": 120.5},
-            ...
-          ]
-        }
-    """
+def _last_complete_year() -> int:
     today = _today()
-    if year is None:
-        year = today.year
+    if today.month < 4:
+        return today.year - 2
+    return today.year - 1
 
-    if year == today.year:
-        end_month = today.month - 1
-        if end_month < 1:
-            year      -= 1
-            end_month  = 12
-    else:
-        end_month = 12
 
-    start_str = f"{year}0101"
-    end_str   = f"{year}{end_month:02d}{_days_in_month(year, end_month):02d}"
+def _fetch_all_years_daily(lat: float, lon: float) -> Optional[dict]:
+    """
+    ONE NASA request covering HISTORY_FROM to last complete year.
+    Returns { "YYYYMMDD": mm, ... } for all days across all years.
+    Much faster than 26 individual requests.
+    """
+    end_year  = _last_complete_year()
+    start_str = f"{HISTORY_FROM}0101"
+    end_str   = f"{end_year}1231"
 
     url = (
-        f"{NASA_BASE}/monthly/point"
+        f"{NASA_BASE}/daily/point"
         f"?parameters=PRECTOTCORR"
         f"&community=AG"
         f"&longitude={lon}&latitude={lat}"
@@ -152,60 +98,134 @@ def get_satellite_monthly(lat: float, lon: float, year: int = None) -> dict | No
         f"&format=JSON"
     )
 
+    logger.info(
+        "NASA single fetch: %d–%d for lat=%.4f lon=%.4f",
+        HISTORY_FROM, end_year, lat, lon,
+    )
+
     try:
-        resp = requests.get(url, timeout=15)
+        resp = requests.get(url, timeout=TIMEOUT)
         resp.raise_for_status()
-        raw     = resp.json()
-        monthly = raw["properties"]["parameter"]["PRECTOTCORR"]
-
-        results = []
-        for key in sorted(monthly.keys()):
-          
-            if len(key) != 6:
-                continue
-            try:
-                y = int(key[:4])
-                m = int(key[4:6])
-            except ValueError:
-                continue
-
-            val = monthly[key]
-            if val is None or val < 0:
-                continue
-
-            days   = _days_in_month(y, m)
-            mm_val = round(val * days, 1)
-            results.append({
-                "month": MONTH_NAMES[m - 1],
-                "year":  y,
-                "mm":    mm_val,
-            })
-
-        return {"monthly": results} if results else None
-
+        raw = resp.json()
+        return raw["properties"]["parameter"]["PRECTOTCORR"]
+    except requests.exceptions.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "?"
+        logger.warning(
+            "NASA single fetch HTTP %s lat=%.4f lon=%.4f", status, lat, lon
+        )
     except Exception as exc:
-        logger.warning("NASA monthly failed: %s", exc)
+        logger.warning(
+            "NASA single fetch error lat=%.4f lon=%.4f: %s", lat, lon, exc
+        )
+    return None
+
+
+def _group_by_year(daily: dict) -> dict:
+    """
+    Takes the flat { "YYYYMMDD": mm } dict and groups into:
+    { 2000: [mm, mm, ...], 2001: [...], ... }
+    """
+    by_year: dict[int, list] = {}
+    for date_str, val in daily.items():
+        if len(date_str) != 8 or val is None or float(val) < 0:
+            continue
+        year = int(date_str[:4])
+        by_year.setdefault(year, []).append(float(val))
+    return by_year
+
+
+def _sum_year(values: list, year: int) -> Optional[float]:
+    if len(values) < 300:
+        logger.warning(
+            "Year %d has only %d valid days — skipping", year, len(values)
+        )
+        return None
+    return round(sum(values), 1)
+
+
+def _ewma_forecast(values: list, alpha: float = 0.3) -> float:
+    if not values:
+        return 900.0
+
+    ewma = float(values[0])
+    for v in values[1:]:
+        ewma = alpha * float(v) + (1 - alpha) * ewma
+
+    if len(values) >= 3:
+        ewma_old = float(values[-3])
+        for v in values[-2:]:
+            ewma_old = alpha * float(v) + (1 - alpha) * ewma_old
+        trend = ewma - ewma_old
+        return max(200.0, round(ewma + trend * 0.5, 1))
+
+    return max(200.0, round(ewma, 1))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PUBLIC API
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_satellite_annual_history(lat: float, lon: float) -> Optional[dict]:
+    """
+    Fetches ALL years in ONE NASA request, groups by year, sums to annual
+    totals, then runs EWMA to forecast the coming season.
+
+    Result is cached for the entire agricultural season (see SEASON_CACHE_TIMEOUT).
+    """
+    daily = _fetch_all_years_daily(lat, lon)
+    if daily is None:
         return None
 
+    by_year = _group_by_year(daily)
 
-def get_satellite_daily(lat: float, lon: float, days: int = 30) -> dict | None:
-    """
-    Fetch daily rainfall for the last `days` days from NASA POWER.
-    NASA POWER daily data has a ~3–5 day lag so we fetch up to yesterday.
+    years  = []
+    values = []
 
-    Returns:
-        {
-          daily:      [{"date": "2025-03-01", "mm": 12.3}, ...],
-          total_mm:   145.6,
-          avg_mm:     4.85,
-        }
-    """
-    today     = _today()
-    end_date  = today - datetime.timedelta(days=1)  
-    start_date = end_date - datetime.timedelta(days=days - 1)
+    for year in sorted(by_year.keys()):
+        total = _sum_year(by_year[year], year)
+        if total is not None:
+            years.append(year)
+            values.append(total)
 
-    start_str = start_date.strftime("%Y%m%d")
-    end_str   = end_date.strftime("%Y%m%d")
+    if not years:
+        logger.warning(
+            "No valid annual totals for lat=%.4f lon=%.4f", lat, lon
+        )
+        return None
+
+    forecast = _ewma_forecast(values)
+
+    logger.info(
+        "Annual history ready: %d years, forecast=%.1fmm, "
+        "cache expires in %d hours",
+        len(years), forecast, SEASON_CACHE_TIMEOUT // 3600,
+    )
+
+    return {
+        "years":     years,
+        "values":    values,
+        "annual_mm": forecast,
+        "source":    f"NASA POWER Daily ({years[0]}–{years[-1]})",
+    }
+
+
+def get_satellite_monthly(
+    lat: float, lon: float, year: int = None
+) -> Optional[dict]:
+    today = _today()
+    if year is None:
+        year = today.year
+
+    if year == today.year:
+        last_month = today.month - 1
+        if last_month < 1:
+            year      -= 1
+            last_month = 12
+    else:
+        last_month = 12
+
+    start_str = f"{year}0101"
+    end_str   = f"{year}{last_month:02d}{_days_in_month(year, last_month):02d}"
 
     url = (
         f"{NASA_BASE}/daily/point"
@@ -217,58 +237,86 @@ def get_satellite_daily(lat: float, lon: float, days: int = 30) -> dict | None:
     )
 
     try:
-        resp = requests.get(url, timeout=20)
+        resp = requests.get(url, timeout=30)
         resp.raise_for_status()
         raw   = resp.json()
         daily = raw["properties"]["parameter"]["PRECTOTCORR"]
+    except Exception as exc:
+        logger.warning("NASA monthly-via-daily error: %s", exc)
+        return None
 
-        results = []
-        for date_str in sorted(daily.keys()):
-            val = daily[date_str]
-            if val is None or val < 0:
-                continue
-            results.append({
-                "date": f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}",
-                "mm":   round(float(val), 2),  
-            })
+    monthly_totals: dict[int, float] = {}
+    for date_str, val in daily.items():
+        if len(date_str) != 8 or val is None or float(val) < 0:
+            continue
+        m = int(date_str[4:6])
+        monthly_totals[m] = monthly_totals.get(m, 0.0) + float(val)
 
-        if not results:
-            return None
+    if not monthly_totals:
+        return None
 
-        total = round(sum(r["mm"] for r in results), 1)
-        avg   = round(total / len(results), 2)
+    return {
+        "monthly": [
+            {"month": MONTH_NAMES[m - 1], "year": year, "mm": round(monthly_totals[m], 1)}
+            for m in sorted(monthly_totals.keys())
+        ]
+    }
 
-        return {
-            "daily":    results,
-            "total_mm": total,
-            "avg_mm":   avg,
-        }
 
+def get_satellite_daily(
+    lat: float, lon: float, days: int = 30
+) -> Optional[dict]:
+    today      = _today()
+    end_date   = today - datetime.timedelta(days=5)
+    start_date = end_date - datetime.timedelta(days=days - 1)
+
+    url = (
+        f"{NASA_BASE}/daily/point"
+        f"?parameters=PRECTOTCORR"
+        f"&community=AG"
+        f"&longitude={lon}&latitude={lat}"
+        f"&start={start_date.strftime('%Y%m%d')}&end={end_date.strftime('%Y%m%d')}"
+        f"&format=JSON"
+    )
+
+    try:
+        resp = requests.get(url, timeout=20)
+        resp.raise_for_status()
+        daily = resp.json()["properties"]["parameter"]["PRECTOTCORR"]
     except Exception as exc:
         logger.warning("NASA daily failed: %s", exc)
         return None
 
+    results = [
+        {
+            "date": f"{d[:4]}-{d[4:6]}-{d[6:]}",
+            "mm":   round(float(v), 2),
+        }
+        for d, v in sorted(daily.items())
+        if v is not None and float(v) >= 0
+    ]
 
-def get_satellite_annual_mm(lat: float, lon: float) -> float | None:
-    """
-    Returns only the EWMA annual forecast mm.
-    Used by recommend route — backward compatible with old interface.
-    """
+    if not results:
+        return None
+
+    total = round(sum(r["mm"] for r in results), 1)
+    return {
+        "daily":    results,
+        "total_mm": total,
+        "avg_mm":   round(total / len(results), 2),
+    }
+
+
+def get_satellite_annual_mm(lat: float, lon: float) -> Optional[float]:
     hist = get_satellite_annual_history(lat, lon)
     return hist["annual_mm"] if hist else None
 
 
-def get_satellite_rainfall(lat: float, lon: float) -> dict | None:
-    """
-    Legacy interface used by old rainfall route.
-    Returns { annual_mm, monthly_mm } — backward compatible.
-    """
+def get_satellite_rainfall(lat: float, lon: float) -> Optional[dict]:
     hist    = get_satellite_annual_history(lat, lon)
     monthly = get_satellite_monthly(lat, lon)
-
     if not hist:
         return None
-
     return {
         "annual_mm":  hist["annual_mm"],
         "monthly_mm": monthly["monthly"] if monthly else [],
