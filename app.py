@@ -65,11 +65,11 @@ def create_app(config_object=Config) -> Flask:
         minutes=config_object.JWT_ACCESS_TOKEN_EXPIRES_MINUTES
     )
 
-    # Initialise cache with season-aware timeout
+    
     app.config["CACHE_TYPE"]            = "FileSystemCache"
     app.config["CACHE_DIR"]             = "cache/rainfall"
     app.config["CACHE_DEFAULT_TIMEOUT"] = SEASON_CACHE_TIMEOUT
-    cache.init_app(app)                                   # ← init here, once
+    cache.init_app(app)                                   
 
     CORS(app, supports_credentials=True)
 

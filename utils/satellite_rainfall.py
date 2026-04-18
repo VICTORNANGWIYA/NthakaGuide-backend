@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 NASA_BASE    = "https://power.larc.nasa.gov/api/temporal"
 HISTORY_FROM = 2000
-TIMEOUT      = 60   # single large request needs more time
+TIMEOUT      = 60  
 
 MONTH_NAMES = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -24,9 +24,7 @@ MONTH_NAMES = [
 ]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CACHE TIMEOUT
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def _seconds_until_season_end() -> int:
     """
@@ -43,28 +41,26 @@ def _seconds_until_season_end() -> int:
     year  = today.year
 
     if today.month >= 11:
-        # Nov/Dec — rainy season, expires end of April next year
+       
         end = datetime.date(year + 1, 5, 1)
     elif today.month <= 4:
-        # Jan–Apr — rainy season, expires end of April this year
+      
         end = datetime.date(year, 5, 1)
     else:
-        # May–Oct — dry season, expires end of October this year
+        
         end = datetime.date(year, 11, 1)
 
     delta = datetime.datetime.combine(end, datetime.time.min) - \
             datetime.datetime.now()
     
-    # Minimum 1 hour, maximum ~6 months
+    
     return max(3600, int(delta.total_seconds()))
 
 
 SEASON_CACHE_TIMEOUT = _seconds_until_season_end()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# INTERNAL HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def _today() -> datetime.date:
     return datetime.date.today()
@@ -161,9 +157,7 @@ def _ewma_forecast(values: list, alpha: float = 0.3) -> float:
     return max(200.0, round(ewma, 1))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PUBLIC API
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def get_satellite_annual_history(lat: float, lon: float) -> Optional[dict]:
     """

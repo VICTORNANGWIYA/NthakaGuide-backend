@@ -1,5 +1,5 @@
 
-#  NthakaGuide — Model Training Script 
+
 import pandas as pd
 import numpy as np
 import pickle
@@ -142,7 +142,7 @@ df_synthetic = pd.DataFrame(synthetic_rows)
 
 
 
-#  LOAD AND MERGE DATASETS
+
 
 banner("Building Merged Crop Dataset")
 
@@ -207,7 +207,7 @@ print(f"\n  💾 Saved → data/merged_crop_dataset.csv")
 
 
 
-#  MODEL 1 — CROP RECOMMENDATION
+
 
 banner("Model 1 — Crop Recommendation")
 
@@ -266,7 +266,7 @@ print("\n  💾 Saved: best_crop_model.pkl | crop_scaler.pkl | crop_label_encode
 
 
 
-# FERTILIZER PREDICTION
+
 
 banner("Model 2 — Fertilizer Prediction")
 

@@ -31,7 +31,7 @@ def get_rotation_advice(previous_crop: str, current_crop: str):
     if not prev or prev in ("none", "unknown", ""):
         return None
 
-    # Same crop warning
+    
     if prev == curr:
         extra = ""
         if curr in HEAVY_FEEDERS:

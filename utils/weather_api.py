@@ -13,8 +13,8 @@ logger = logging.getLogger("NthakaGuide.weather_api")
 _OPEN_METEO_URL  = "https://api.open-meteo.com/v1/forecast"
 _FORECAST_DAYS   = 7
 _TIMEOUT_SECONDS = 8
-_MAX_RETRIES     = 1        # one retry on transient 5xx errors
-_RETRY_DELAY_S   = 1.0      # seconds between retry attempts
+_MAX_RETRIES     = 1        
+_RETRY_DELAY_S   = 1.0      
 
 
 def get_live_rainfall(lat: float, lon: float) -> dict | None:
@@ -78,14 +78,14 @@ def get_live_rainfall(lat: float, lon: float) -> dict | None:
         except requests.exceptions.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else "?"
             if isinstance(status, int) and status >= 500:
-                # Transient server error — retry
+                
                 logger.warning(
                     "Open-Meteo returned %s (attempt %d/%d) — retrying",
                     status, attempt + 1, _MAX_RETRIES + 1,
                 )
                 last_exc = exc
             else:
-                # Client error (4xx) — no point retrying
+                
                 logger.warning(
                     "Open-Meteo HTTP %s for lat=%.4f lon=%.4f: %s",
                     status, lat, lon, exc,
@@ -102,7 +102,7 @@ def get_live_rainfall(lat: float, lon: float) -> dict | None:
         if attempt < _MAX_RETRIES:
             time.sleep(_RETRY_DELAY_S)
     else:
-        # All attempts exhausted
+       
         logger.error(
             "Open-Meteo failed after %d attempt(s) (lat=%.4f lon=%.4f): %s",
             _MAX_RETRIES + 1, lat, lon, last_exc,
@@ -114,8 +114,7 @@ def get_live_rainfall(lat: float, lon: float) -> dict | None:
         dates  = data["daily"]["time"]
         values = data["daily"]["precipitation_sum"]
 
-        # FIX 2: validate list lengths before zip — mismatches are an API bug
-        # but we must not silently truncate or pair wrong dates with wrong values
+       
         if len(dates) != len(values):
             logger.error(
                 "Open-Meteo returned mismatched dates (%d) and values (%d) "
@@ -124,7 +123,7 @@ def get_live_rainfall(lat: float, lon: float) -> dict | None:
             )
             return None
 
-        # Replace API nulls (no-rain days) with 0.0
+       
         values = [v if v is not None else 0.0 for v in values]
 
         total = round(sum(values), 1)

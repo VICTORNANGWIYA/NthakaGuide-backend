@@ -1,7 +1,3 @@
-# ═══════════════════════════════════════════════════════════════════════════
-#  NthakaGuide — Recommendation API Route
-#  COM422 Final Year Project | UNIMA 2025/2026
-# ═══════════════════════════════════════════════════════════════════════════
 
 import os
 import pickle
@@ -35,9 +31,7 @@ crop_scaler  = pickle.load(open(os.path.join(BASE, "models/crop_scaler.pkl"),   
 crop_encoder = pickle.load(open(os.path.join(BASE, "models/crop_label_encoder.pkl"), "rb"))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  CROP NAME RESOLUTION
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 _BUILT_IN_CROP_MAP = {
     "banana":      "Banana",      "blackgram":   "Black Gram",
@@ -70,11 +64,6 @@ def _resolve_display_name(crop_raw: str) -> str:
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  FERTILIZER PLAN BUILDER
-#  Merges algorithm output (adjust_for_rainfall + generate_fertilizer_plan)
-#  into the shape the frontend FertilizerPlan interface expects.
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _infer_soil_type(ph: float, organic_matter: float, moisture: float) -> str:
     """
@@ -240,9 +229,7 @@ def _build_fertilizer_plan(
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  ML PREDICTION
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def predict_crop_ml(N, P, K, temperature, humidity, ph, annual_rainfall_mm):
     """
@@ -288,9 +275,7 @@ def rescale_confidences(predictions: list) -> list:
     return predictions
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  FILTERING
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 TARGET = 5
 
@@ -335,9 +320,7 @@ def _apply_filters(all_predictions: list, allowed_zone: set, allowed_use: set) -
     return selected
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  RAINFALL RESOLUTION
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def resolve_rainfall(district_name: str, district: dict) -> dict:
     """
@@ -387,9 +370,7 @@ def resolve_rainfall(district_name: str, district: dict) -> dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  REASON BUILDER
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def build_reason(
     rank, crop_name, confidence,
@@ -432,9 +413,7 @@ def build_reason(
     return reason
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  MAIN ROUTE
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 @recommend_bp.route("/recommend", methods=["POST"])
 def recommend():
@@ -470,7 +449,7 @@ def recommend():
     if not district:
         return jsonify({"error": f"Unknown district: {district_name}"}), 400
 
-    # ── Rainfall ──────────────────────────────────────────────────────────
+   
     rainfall_data     = resolve_rainfall(district_name, district)
     annual_mm         = rainfall_data["annual_mm"]
     annual_source     = rainfall_data["annual_source"]
@@ -490,7 +469,7 @@ def recommend():
         "Very High"
     )
 
-    # ── ML prediction ─────────────────────────────────────────────────────
+    
     all_predictions = predict_crop_ml(
         nitrogen, phosphorus, potassium,
         temperature, moisture, ph,
@@ -504,7 +483,7 @@ def recommend():
     filtered = _apply_filters(all_predictions, allowed_zone, allowed_use)
     filtered = rescale_confidences(filtered)
 
-    # ── Build crop list ───────────────────────────────────────────────────
+    
     crops = []
     for i, pred in enumerate(filtered):
 
@@ -518,7 +497,7 @@ def recommend():
             None,
         )
 
-        # Build rich fertilizer plan from algorithms
+        
         fertilizer_plan = _build_fertilizer_plan(
             crop_raw      = crop_raw,
             crop_display  = crop_display,
@@ -552,7 +531,7 @@ def recommend():
             "rotationAdvice": rotation_advice,
         })
 
-    # ── Soil summary ──────────────────────────────────────────────────────
+   
     soil_alerts     = get_soil_alerts(nitrogen, phosphorus, potassium, ph, annual_mm)
     soil_assessment = assess_soil(nitrogen, phosphorus, potassium, ph, organic, moisture)
     rotation_tip    = get_general_rotation_tip(previous_crop)
@@ -584,7 +563,7 @@ def recommend():
             "liveDailyForecast":   live_daily,
         },
 
-        # Flat aliases kept for frontend backward compat
+        
         "forecastedRainfall":      annual_mm,
         "rainfallSource":          annual_source,
         "rainfallBand":            rainfall_band,

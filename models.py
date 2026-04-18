@@ -16,9 +16,7 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# =========================
-# USER
-# =========================
+
 class User(db.Model):
     __tablename__ = "users"
 
@@ -46,9 +44,7 @@ class User(db.Model):
         }
 
 
-# =========================
-# PROFILE
-# =========================
+
 class Profile(db.Model):
     __tablename__ = "profiles"
 
@@ -77,25 +73,23 @@ class Profile(db.Model):
         }
 
 
-# =========================
-# ANALYSIS HISTORY
-# =========================
+
 class AnalysisHistory(db.Model):
     __tablename__ = "analysis_history"
 
     id      = db.Column(db.String(36), primary_key=True, default=_uuid)
     user_id = db.Column(db.String(36), db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
 
-    # Context
+    
     district     = db.Column(db.String(100), nullable=False, index=True)
     climate_zone = db.Column(db.String(100))
     input_mode   = db.Column(db.String(20), default="lab")
 
-    # Farmer context
+    
     land_use      = db.Column(db.String(30))
     previous_crop = db.Column(db.String(100))
 
-    # Soil data
+   
     nitrogen       = db.Column(db.Float)
     phosphorus     = db.Column(db.Float)
     potassium      = db.Column(db.Float)
@@ -104,22 +98,22 @@ class AnalysisHistory(db.Model):
     temperature    = db.Column(db.Float)
     organic_matter = db.Column(db.Float)
 
-    # Rainfall
+    
     rainfall_mm       = db.Column(db.Float)
     rainfall_band     = db.Column(db.String(20))
     rainfall_category = db.Column(db.String(20))
 
-    # Recommendation
+   
     recommended_crop  = db.Column(db.String(100), nullable=False, index=True)
     crop_score        = db.Column(db.Float)
     crop_confidence   = db.Column(db.Float)
     crop_season       = db.Column(db.String(50))
 
-    # 🔥 FIXED: was String(100) → TEXT
+    
     fertilizer_type   = db.Column(db.Text)
 
-    # JSON (PostgreSQL optimized)
-    all_crops_json   = db.Column(JSONB)   # 🔥 faster than JSON
+   
+    all_crops_json   = db.Column(JSONB)   
     soil_alerts_json = db.Column(JSONB)
 
     created_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False, index=True)
@@ -164,9 +158,7 @@ class AnalysisHistory(db.Model):
         return f"<AnalysisHistory {self.id} — {self.recommended_crop} @ {self.district}>"
 
 
-# =========================
-# CHAT LOGS
-# =========================
+
 class ChatLog(db.Model):
     __tablename__ = "chat_logs"
 
@@ -212,13 +204,13 @@ class AuditLog(db.Model):
     id         = db.Column(db.String(36),  primary_key=True, default=_uuid)
     admin_id   = db.Column(db.String(36),  db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     action     = db.Column(db.String(100), nullable=False, index=True)
-    target_id  = db.Column(db.String(100), nullable=True)   # user_id, model name, etc.
-    target_label = db.Column(db.String(255), nullable=True) # email, filename, etc.
+    target_id  = db.Column(db.String(100), nullable=True)  
+    target_label = db.Column(db.String(255), nullable=True) 
     detail     = db.Column(db.Text,        nullable=True)
-    ip_address = db.Column(db.String(45),  nullable=True)   # IPv4 or IPv6
+    ip_address = db.Column(db.String(45),  nullable=True)  
     created_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False, index=True)
  
-    # Relationship so we can show admin email without a join in Python
+    
     admin      = db.relationship("User", foreign_keys=[admin_id], lazy="joined")
  
     def to_dict(self) -> dict:
@@ -246,11 +238,11 @@ class DeletionSurvey(db.Model):
     __tablename__ = "deletion_surveys"
  
     id           = db.Column(db.String(36),  primary_key=True, default=_uuid)
-    user_id      = db.Column(db.String(36),  nullable=True)   # not a FK — user will be deleted
+    user_id      = db.Column(db.String(36),  nullable=True)   
     user_email   = db.Column(db.String(255), nullable=False)
-    reason       = db.Column(db.String(100), nullable=False)  # selected option key
-    reason_label = db.Column(db.String(255), nullable=False)  # human-readable label
-    details      = db.Column(db.Text,        nullable=True)   # optional free-text comment
+    reason       = db.Column(db.String(100), nullable=False)  
+    reason_label = db.Column(db.String(255), nullable=False)  
+    details      = db.Column(db.Text,        nullable=True)   
     created_at   = db.Column(db.DateTime(timezone=True), default=_now, nullable=False, index=True)
  
     def to_dict(self) -> dict:

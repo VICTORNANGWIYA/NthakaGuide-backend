@@ -1,19 +1,4 @@
-"""
-NthakaGuide — algorithms.py  (v2 — Malawi-precise rule engine)
-===============================================================
-Improvements over v1:
-  1.  Crop-specific N/P/K base rates with physiological rationale
-  2.  Soil-type leaching multipliers (sandy vs clay vs loamy)
-  3.  pH-aware fertilizer product selection (CAN over Urea on acid soils)
-  4.  Deficiency-severity-scaled fertilizer rates (not just on/off)
-  5.  CAN and Ammonium sulphate added as first-class products
-      (FAO data: CAN = 155k tonnes, AS = 201k tonnes imported by Malawi)
-  6.  MAP added as alternative P source to DAP
-  7.  Potassium leaching adjustment in very high rainfall
-  8.  Precise compost/organic rates and timing
-  9.  Confidence scoring on every recommendation
- 10.  Crop-growth-stage-aware application timing
-"""
+
 
 import math
 import logging
@@ -21,9 +6,6 @@ import logging
 logger = logging.getLogger("NthakaGuide.algorithms")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  RAINFALL FORECASTING  (unchanged — already correct)
-# ─────────────────────────────────────────────────────────────────────────────
 
 def forecast_ewma(historical_values: list, alpha: float = 0.3) -> dict:
     if not historical_values:
@@ -57,10 +39,6 @@ def forecast_ewma(historical_values: list, alpha: float = 0.3) -> dict:
 
     return {"predicted": forecast, "confidence": confidence}
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  RAINFALL BANDS
-# ─────────────────────────────────────────────────────────────────────────────
 
 def get_rainfall_band(annual_mm: float) -> str:
     if annual_mm < 400:  return "Very Low"
@@ -101,9 +79,6 @@ def get_monthly_distribution(annual_mm: float) -> list:
             for m, f in percentages.items()]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  CROP SUITABILITY  (unchanged)
-# ─────────────────────────────────────────────────────────────────────────────
 
 def get_crop_suitability_by_rainfall(annual_mm: float) -> list:
     crops = [
@@ -137,10 +112,6 @@ def get_crop_suitability_by_rainfall(annual_mm: float) -> list:
     return sorted(result, key=lambda x: -x["suitability"])[:8]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  FERTILIZER CALENDAR  (improved — crop-aware)
-# ─────────────────────────────────────────────────────────────────────────────
-
 def get_fertilizer_calendar(annual_mm: float) -> list:
     if annual_mm < 650:
         return [
@@ -167,22 +138,17 @@ def get_fertilizer_calendar(annual_mm: float) -> list:
     ]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  SOIL TYPE LEACHING MULTIPLIERS  (NEW)
-#  Source: standard soil science — sandy soils hold ~40% less N than loamy
-# ─────────────────────────────────────────────────────────────────────────────
-
 SOIL_LEACHING_FACTOR = {
-    "sandy":   1.25,   # loses nutrients fastest — increase rate to compensate
-    "loamy":   1.00,   # reference soil
-    "clay":    0.90,   # holds nutrients well — slight reduction
+    "sandy":   1.25,   
+    "loamy":   1.00,   
+    "clay":    0.90,   
     "clayey":  0.90,
     "silt":    0.95,
-    "peaty":   0.85,   # high organic — nutrients bind well
-    "black":   0.90,   # vertisol — high clay content
-    "red":     1.10,   # laterite — moderate leaching
+    "peaty":   0.85,  
+    "black":   0.90,   
+    "red":     1.10,   
     "neutral": 1.00,
-    "acidic":  1.05,   # slightly higher loss due to fixation
+    "acidic":  1.05,   
     "alkaline":0.95,
 }
 
@@ -190,24 +156,9 @@ def _soil_factor(soil_type: str) -> float:
     return SOIL_LEACHING_FACTOR.get(soil_type.lower().strip(), 1.00)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  CROP-SPECIFIC BASE RATES  (v2 — physiologically grounded)
-#
-#  Units: kg/ha of product (not elemental nutrient)
-#  basal_npk : NPK 23:21:0 compound fertilizer at planting
-#  urea      : 46-0-0 total across all top-dressings
-#  dap_extra : additional DAP when crop needs P boost beyond NPK basal
-#  k_extra   : additional MOP/SOP when crop needs K boost
-#  preferred_n_source: which N product suits this crop best
-#
-#  Evidence base:
-#  - Malawi Ministry of Agriculture extension recommendations
-#  - FAO Fertilizer and Plant Nutrition Bulletin 16 (Sub-Saharan Africa)
-#  - IFPRI Malawi supply chain survey (Jumbe, 2016)
-# ─────────────────────────────────────────────────────────────────────────────
 
 CROP_BASE_RATES = {
-    # ── CEREALS ──────────────────────────────────────────────────────────────
+   
     "maize": {
         "basal_npk": 200, "urea": 100, "dap_extra": 0,   "k_extra": 0,
         "preferred_n": "urea_or_can",
@@ -237,7 +188,7 @@ CROP_BASE_RATES = {
         "note": "Mainly grown in Malawi highlands. CAN preferred on acidic highland soils."
     },
 
-    # ── LEGUMES (fix atmospheric N — urea = 0) ───────────────────────────────
+    
     "beans": {
         "basal_npk": 100, "urea": 0,   "dap_extra": 30,  "k_extra": 0,
         "preferred_n": "none",
@@ -292,7 +243,7 @@ CROP_BASE_RATES = {
         "note": "Legume. Minimal fertilizer."
     },
 
-    # ── ROOT CROPS ────────────────────────────────────────────────────────────
+   
     "cassava": {
         "basal_npk": 100, "urea": 40,  "dap_extra": 0,   "k_extra": 50,
         "preferred_n": "urea_or_can",
@@ -317,10 +268,9 @@ CROP_BASE_RATES = {
                 "SOP preferred — chloride from MOP reduces starch content."
     },
 
-    # ── CASH CROPS ────────────────────────────────────────────────────────────
     "tobacco": {
         "basal_npk": 150, "urea": 60,  "dap_extra": 0,   "k_extra": 120,
-        "preferred_n": "can",          # CAN preferred — Urea can cause tip burn
+        "preferred_n": "can",         
         "note": "Very high K demand for leaf quality. CAN preferred over Urea "
                 "— Urea causes leaf tip burn on flue-cured tobacco. "
                 "Ammonium sulphate good for sulphur on alkaline soils."
@@ -349,7 +299,7 @@ CROP_BASE_RATES = {
         "note": "Perennial. High K for fruit quality."
     },
 
-    # ── OILSEEDS ──────────────────────────────────────────────────────────────
+    
     "sunflower": {
         "basal_npk": 120, "urea": 60,  "dap_extra": 0,   "k_extra": 20,
         "preferred_n": "urea_or_can",
@@ -361,7 +311,7 @@ CROP_BASE_RATES = {
         "note": "Low input crop. Over-fertilisation causes excessive leafy growth."
     },
 
-    # ── HORTICULTURE ──────────────────────────────────────────────────────────
+  
     "tomato": {
         "basal_npk": 150, "urea": 80,  "dap_extra": 30,  "k_extra": 60,
         "preferred_n": "urea_or_can",
@@ -390,7 +340,6 @@ CROP_BASE_RATES = {
         "note": "High K for fruit sweetness. Reduce N after vine establishment."
     },
 
-    # ── DEFAULT (fallback) ────────────────────────────────────────────────────
     "_default": {
         "basal_npk": 150, "urea": 80,  "dap_extra": 0,   "k_extra": 0,
         "preferred_n": "urea_or_can",
@@ -398,9 +347,7 @@ CROP_BASE_RATES = {
     },
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  RAINFALL ADJUSTMENT FACTORS  (v2 — K leaching added)
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 RAINFALL_ADJUSTMENTS = {
     #                npk    urea   k      split  method
@@ -411,9 +358,7 @@ RAINFALL_ADJUSTMENTS = {
     "Very High": {"npk": 1.00, "urea": 0.80, "k": 1.20, "split": 3, "method": "slow-release"},
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  pH-AWARE NITROGEN PRODUCT SELECTION  (NEW)
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def _select_n_product(preferred_n: str, ph: float, band: str) -> dict:
     """
@@ -491,9 +436,7 @@ def _select_n_product(preferred_n: str, ph: float, band: str) -> dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  APPLICATION PLAN BUILDER  (v2 — crop-aware timing)
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def _build_application_plan(
     npk_rate: int,
@@ -508,7 +451,7 @@ def _build_application_plan(
     plan = []
     crop_lower = crop.lower().strip()
 
-    # ── BASAL APPLICATION ─────────────────────────────────────────────────────
+    
     if method == "micro-dosing":
         plan.append({
             "timing": "At planting",
@@ -545,7 +488,7 @@ def _build_application_plan(
                 "products": [f"NPK 23:21:0 — {npk_rate} kg/ha"],
             })
 
-    # ── EXTRA DAP (P boost for legumes and some horticulture) ─────────────────
+    
     if dap_extra > 0:
         plan.append({
             "timing": "At planting (with basal)",
@@ -556,7 +499,7 @@ def _build_application_plan(
             "products": [f"DAP 18:46:0 — {dap_extra} kg/ha"],
         })
 
-    # ── EXTRA K (K-demanding crops) ───────────────────────────────────────────
+   
     if k_extra > 0:
         k_product = "SOP (Potassium Sulphate)" if crop_lower in (
             "sweet potato", "sweetpotato", "potato", "tobacco", "tomato"
@@ -570,7 +513,7 @@ def _build_application_plan(
             "products": [f"{k_product} — {k_extra} kg/ha"],
         })
 
-    # ── NITROGEN TOP-DRESSINGS ────────────────────────────────────────────────
+   
     if urea_rate > 0 and n_product.get("product"):
         n_prod = n_product["product"]
         per_split = round(urea_rate / splits)
@@ -585,7 +528,7 @@ def _build_application_plan(
                 "products": [f"{n_prod} — {urea_rate} kg/ha"],
             })
         else:
-            # Crop-specific timing
+           
             if crop_lower in ("maize",):
                 timings = ["4–6 weeks (knee-high stage)", "8–10 weeks (tasseling stage)", "11–12 weeks"]
             elif crop_lower in ("tobacco",):
@@ -612,9 +555,7 @@ def _build_application_plan(
     return plan
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  MAIN FERTILIZER ADJUSTMENT FUNCTION  (v2)
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def adjust_for_rainfall(
     annual_mm: float,
@@ -650,22 +591,22 @@ def adjust_for_rainfall(
     k_extra   = round(rates.get("k_extra", 0) * adj["k"] * sf)
     dap_extra = rates.get("dap_extra", 0)
 
-    # pH-aware N product selection
+    
     n_product = _select_n_product(rates.get("preferred_n", "urea_or_can"), ph, band)
 
-    # Build application plan
+    
     plan = _build_application_plan(
         npk_rate, urea_rate, dap_extra, k_extra,
         adj["split"], adj["method"], n_product, crop,
     )
 
-    # Warnings
+    
     warnings = _build_warnings(annual_mm, band, crop_key, ph, soil_type)
 
-    # Organic advice (now with precise rates)
+    
     organic_advice = _get_organic_advice(band, soil_type)
 
-    # Confidence scoring (NEW)
+    
     confidence = _score_confidence(crop_key, ph, soil_type, annual_mm, band)
 
     return {
@@ -687,9 +628,7 @@ def adjust_for_rainfall(
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  WARNINGS  (v2 — more specific)
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def _build_warnings(
     annual_mm: float,
@@ -746,9 +685,7 @@ def _build_warnings(
     return warnings
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  ORGANIC ADVICE  (v2 — specific rates and timing)
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def _get_organic_advice(band: str, soil_type: str) -> str:
     base_rate = "5–10 t/ha"
@@ -782,10 +719,7 @@ def _get_organic_advice(band: str, soil_type: str) -> str:
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  CONFIDENCE SCORING  (NEW)
-#  Returns a score 0–100 with a plain-language explanation
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def _score_confidence(
     crop: str,
@@ -847,10 +781,7 @@ def _score_confidence(
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  DEFICIENCY-SEVERITY-SCALED FERTILIZER PLAN  (v2)
-#  Called from /recommend endpoint for soil-test-based advice
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def generate_fertilizer_plan(
     N: float, P: float, K: float,
@@ -880,9 +811,9 @@ def generate_fertilizer_plan(
         "Very Low": "Micro-dose only — place fertilizer in planting hole.",
     }.get(rainfall_cat, "")
 
-    # ── NITROGEN ──────────────────────────────────────────────────────────────
+    
     if N < 20:
-        # Severe deficiency — large corrective dose
+      
         rate = round((60 - N) * 2.2)
         n_prod = "CAN (26% N)" if ph < 5.5 else "Urea (46% N)"
         alt    = "Urea (46% N)" if ph < 5.5 else "CAN (26% N)"
@@ -900,7 +831,7 @@ def generate_fertilizer_plan(
             "confidence": "High — severe deficiency, clear corrective action needed",
         })
     elif N < 40:
-        # Moderate deficiency
+        
         rate = round((60 - N) * 1.8)
         n_prod = "CAN (26% N)" if ph < 5.5 else "Urea (46% N)"
         plans.append({
@@ -915,10 +846,10 @@ def generate_fertilizer_plan(
             "confidence": "High",
         })
 
-    # ── PHOSPHORUS ────────────────────────────────────────────────────────────
+  
     if P < 10:
         rate = round((30 - P) * 2.5)
-        # MAP if N is already adequate, DAP if N also needed
+        
         p_prod = "MAP (52% P, 11% N)" if N >= 40 else "DAP (46% P, 18% N)"
         plans.append({
             "type":            p_prod,
@@ -949,7 +880,7 @@ def generate_fertilizer_plan(
             "confidence": "High",
         })
 
-    # ── POTASSIUM ─────────────────────────────────────────────────────────────
+    
     if K < 50:
         rate = round((80 - K) * 1.8)
         k_prod = (
@@ -997,7 +928,7 @@ def generate_fertilizer_plan(
             "confidence": "High",
         })
 
-    # ── MAINTENANCE (all nutrients adequate) ─────────────────────────────────
+    
     if N >= 60 and P >= 30 and K >= 80:
         plans.append({
             "type":            "NPK 23:21:0 (Maintenance dose)",
@@ -1012,7 +943,7 @@ def generate_fertilizer_plan(
             "confidence": "High",
         })
 
-    # ── ORGANIC MATTER ────────────────────────────────────────────────────────
+   
     if organic_matter < 1.0:
         plans.append({
             "type":            "Compost or well-rotted manure",
@@ -1039,7 +970,7 @@ def generate_fertilizer_plan(
             "confidence": "High",
         })
 
-    # ── LIME (pH correction) ─────────────────────────────────────────────────
+    
     if ph < 5.5:
         lime_rate = round((6.0 - ph) * 2000)
         lime_rate = min(lime_rate, 4000)  # cap at 4 t/ha for safety
@@ -1072,9 +1003,7 @@ def generate_fertilizer_plan(
     return plans
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  SOIL ALERTS  (v2 — corrected K thresholds, severity levels)
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def get_soil_alerts(
     N: float, P: float, K: float,
@@ -1082,7 +1011,7 @@ def get_soil_alerts(
 ) -> list:
     alerts = []
 
-    # pH
+    
     if ph < 5.0:
         alerts.append({"type": "danger", "icon": "⚠️",
             "message": f"Soil is very acidic (pH {ph:.1f}). Apply 2–3 t/ha lime immediately. "
@@ -1105,7 +1034,7 @@ def get_soil_alerts(
                        "Phosphorus and micronutrients are less available. "
                        "Apply sulphur or ammonium sulphate to gradually lower pH."})
 
-    # Nitrogen
+    
     if N < 20:
         alerts.append({"type": "danger", "icon": "⚠️",
             "message": f"Nitrogen is very low ({N:.0f} mg/kg). Crops will turn yellow "
@@ -1115,7 +1044,7 @@ def get_soil_alerts(
             "message": f"Nitrogen is low ({N:.0f} mg/kg). "
                        "Apply nitrogen fertilizer before planting."})
 
-    # Phosphorus
+    
     if P < 10:
         alerts.append({"type": "danger", "icon": "⚠️",
             "message": f"Phosphorus is very low ({P:.0f} mg/kg). "
@@ -1125,7 +1054,7 @@ def get_soil_alerts(
             "message": f"Phosphorus is low ({P:.0f} mg/kg). "
                        "Apply DAP or NPK basal fertilizer at planting."})
 
-    # Potassium (corrected thresholds: <50 = severe, 50–80 = low, >300 = excess)
+    
     if K < 50:
         alerts.append({"type": "danger", "icon": "⚠️",
             "message": f"Potassium is very low ({K:.0f} mg/kg). "
@@ -1157,9 +1086,6 @@ def get_soil_alerts(
     return alerts
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  SOIL ASSESSMENT  (v2 — severity-aware summary)
-# ─────────────────────────────────────────────────────────────────────────────
 
 def assess_soil(
     N: float, P: float, K: float,

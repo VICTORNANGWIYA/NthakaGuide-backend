@@ -8,16 +8,13 @@ import datetime
 
 logger = logging.getLogger("NthakaGuide.season_helper")
 
-# 3-letter abbreviations used as month keys throughout the system.
-# Must match the keys produced by get_monthly_distribution() in algorithms.py
-# AND by the NASA POWER normalisation in satellite_rainfall.py.
+
 _MONTH_ABBR = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ]
 
-# Malawi seasonal percentages (fraction of annual rainfall per month).
-# Must stay in sync with PERCENTAGES in algorithms.get_monthly_distribution().
+
 _RAINY_MONTH_PCT: dict[str, float] = {
     "Nov": 0.08, "Dec": 0.14, "Jan": 0.20,
     "Feb": 0.22, "Mar": 0.18, "Apr": 0.09, "May": 0.04,
@@ -28,9 +25,7 @@ _DRY_MONTH_PCT: dict[str, float] = {
 }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  SEASON LABEL
-# ═══════════════════════════════════════════════════════════════════════════
+
 
 def get_season_label() -> dict:
     """
@@ -53,13 +48,11 @@ def get_season_label() -> dict:
     in_rainy_season: bool = (month >= 11 or month <= 5)
 
     if in_rainy_season:
-        # Current rainy season started in November of:
-        #   - this year  (if we are in Nov or Dec)
-        #   - last year  (if we are in Jan–May)
+        
         season_start_year = today.year if month >= 11 else today.year - 1
         label             = "This rain season"
     else:
-        # Next rainy season starts in November of this year
+       
         season_start_year = today.year
         label             = "Next rain season"
 
@@ -77,9 +70,7 @@ def get_season_label() -> dict:
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  WEEKLY SUMMARY
-# ═══════════════════════════════════════════════════════════════════════════
+
 
 def get_weekly_summary(daily_data: list) -> list:
     """
@@ -128,9 +119,7 @@ def get_weekly_summary(daily_data: list) -> list:
     return weeks
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  SEASON TOTAL ESTIMATE
-# ═══════════════════════════════════════════════════════════════════════════
+
 
 def estimate_season_total(monthly_distribution: list, annual_forecast: float) -> dict:
     """
@@ -158,7 +147,7 @@ def estimate_season_total(monthly_distribution: list, annual_forecast: float) ->
             "months_from_pct":   list[str],   # which months used fallback %
         }
     """
-    # Build a lookup keyed by normalised 3-letter abbreviation
+    
     month_totals: dict[str, float] = {}
 
     if monthly_distribution:
@@ -194,16 +183,12 @@ def estimate_season_total(monthly_distribution: list, annual_forecast: float) ->
         "season_total_mm":   round(season_mm, 1),
         "season_months":     list(_RAINY_MONTH_PCT.keys()),
         "dry_season_months": list(_DRY_MONTH_PCT.keys()),
-        "months_from_data":  from_data,   # transparency — which months had real data
-        "months_from_pct":   from_pct,    # transparency — which used fallback %
+        "months_from_data":  from_data,   
+        "months_from_pct":   from_pct,    
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  INTERNAL HELPERS
-# ═══════════════════════════════════════════════════════════════════════════
 
-# Map accepted month representations → 3-letter abbreviation
 _FULL_TO_ABBR: dict[str, str] = {
     "january": "Jan",   "february": "Feb",  "march": "Mar",
     "april":   "Apr",   "may":      "May",  "june":  "Jun",
@@ -229,17 +214,17 @@ def _normalise_month_key(raw: str) -> str | None:
     """
     stripped = raw.strip()
 
-    # Already a 3-letter abbreviation (case-insensitive)
+    
     title = stripped.title()
     if title in _ABBR_SET:
         return title
 
-    # Full month name
+    
     lower = stripped.lower()
     if lower in _FULL_TO_ABBR:
         return _FULL_TO_ABBR[lower]
 
-    # Numeric string "1"–"12"
+    
     if stripped.isdigit() and stripped in _NUM_TO_ABBR:
         return _NUM_TO_ABBR[stripped]
 

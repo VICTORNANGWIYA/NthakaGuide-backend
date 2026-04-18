@@ -1,25 +1,4 @@
-# routes/auth_reset.py
-# ─────────────────────────────────────────────────────────────────────────────
-# Password-reset flow  +  all transactional emails for NthakaGuide.
-#
-# Email sending policy:
-#   BACKGROUND (daemon thread):
-#     - send_welcome_email          → fired from register(); user has their
-#                                     JWT already, welcome email is a bonus.
-#     - send_analysis_email         → fired after analysis saved; heavy
-#                                     operation, user is not waiting for it.
-#
-#   SYNCHRONOUS (user is actively waiting or needs confirmation):
-#     - OTP email in forgot_password()
-#     - send_password_changed_email()
-#     - send_account_deactivated_email()
-#     - send_account_reactivated_email()
-#
-# Endpoints:
-#   POST /auth/forgot-password   — send OTP
-#   POST /auth/verify-otp        — verify OTP → return reset_token
-#   POST /auth/reset-password    — set new password
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 import os
 import secrets
@@ -41,17 +20,14 @@ from routes.auth_utils import _validate_password, _bad
 logger   = logging.getLogger("NthakaGuide.reset")
 reset_bp = Blueprint("reset", __name__, url_prefix="/auth")
 
-# ── OTP store (swap for Redis in production) ──────────────────────────────────
+
 _OTP_STORE: dict[str, dict] = {}
 
-OTP_TTL_SECONDS = 600    # 10 minutes
+OTP_TTL_SECONDS = 600    
 OTP_LENGTH      = 6
-RESET_TOKEN_TTL = 900    # 15 minutes
+RESET_TOKEN_TTL = 900    
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SMTP helpers
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _smtp_cfg() -> dict:
     """
@@ -67,7 +43,7 @@ def _smtp_cfg() -> dict:
             "password": current_app.config.get("MAIL_PASSWORD", ""),
         }
     except RuntimeError:
-        # Background thread — no app context, read env directly
+        
         return {
             "server":   os.getenv("MAIL_SERVER",   "smtp.gmail.com"),
             "port":     int(os.getenv("MAIL_PORT", "587")),
@@ -105,9 +81,7 @@ def _base_msg(to_email: str, subject: str) -> MIMEMultipart:
     return msg
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared HTML template
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 LOGO_TAG = (
     '<img src="https://res.cloudinary.com/drct2cpcw/image/upload/'
@@ -167,20 +141,14 @@ def _wrap(subject_label: str, body_html: str) -> str:
 </html>"""
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Background email dispatcher
-# Used ONLY for welcome email and analysis email — see policy at top of file.
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def _fire_email(fn, *args) -> None:
     """Run fn(*args) in a daemon thread — errors are caught inside fn."""
     threading.Thread(target=fn, args=args, daemon=True).start()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# EMAIL 1 — OTP / Password Reset
-# Sent SYNCHRONOUSLY — user is on the forgot-password screen waiting for code.
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def _build_otp_email(to_email: str, otp: str, full_name: str | None) -> MIMEMultipart:
     first    = full_name.split()[0] if full_name else None
@@ -213,12 +181,7 @@ def _build_otp_email(to_email: str, otp: str, full_name: str | None) -> MIMEMult
     return msg
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# EMAIL 2 — Welcome
-# Sent in a BACKGROUND thread from auth.py register().
-# User already has their JWT — this is a bonus email, never blocks login.
-# NEVER raises — only logs on failure.
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def send_welcome_email(to_email: str, full_name: str | None) -> None:
     first    = full_name.split()[0] if full_name else "Farmer"
@@ -263,16 +226,11 @@ def send_welcome_email(to_email: str, full_name: str | None) -> None:
         _send_raw(msg)
         logger.info("Welcome email sent to %s", to_email)
     except Exception as exc:
-        # Never crash — account is already created and JWT already issued
+        
         logger.warning("Welcome email failed for %s: %s", to_email, exc)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# EMAIL 3 — Password Changed
-# Sent SYNCHRONOUSLY — security-critical notification.
-# User must know immediately if their password was changed.
-# Raises on failure so the caller can return an appropriate error response.
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def send_password_changed_email(to_email: str, full_name: str | None) -> None:
     """
@@ -303,15 +261,11 @@ def send_password_changed_email(to_email: str, full_name: str | None) -> None:
     msg = _base_msg(to_email, "Your NthakaGuide password was changed")
     msg.attach(MIMEText(plain,                                 "plain"))
     msg.attach(MIMEText(_wrap("Password Changed", body_html),  "html"))
-    _send_raw(msg)   # raises on failure — caller handles it
+    _send_raw(msg)  
     logger.info("Password-changed email sent to %s", to_email)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# EMAIL 4 — Account Deactivated
-# Sent SYNCHRONOUSLY — admin action the user must be notified of immediately.
-# Raises on failure so the admin route can surface the error.
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def send_account_deactivated_email(to_email: str, full_name: str | None) -> None:
     """
@@ -344,15 +298,11 @@ def send_account_deactivated_email(to_email: str, full_name: str | None) -> None
     msg = _base_msg(to_email, "Your NthakaGuide account has been deactivated")
     msg.attach(MIMEText(plain,                                    "plain"))
     msg.attach(MIMEText(_wrap("Account Deactivated", body_html),  "html"))
-    _send_raw(msg)   # raises on failure — caller handles it
+    _send_raw(msg)  
     logger.info("Deactivation email sent to %s", to_email)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# EMAIL 5 — Account Reactivated
-# Sent SYNCHRONOUSLY — user needs to know they can log in again.
-# Raises on failure so the admin route can surface the error.
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def send_account_reactivated_email(to_email: str, full_name: str | None) -> None:
     """
@@ -383,15 +333,11 @@ def send_account_reactivated_email(to_email: str, full_name: str | None) -> None
     msg = _base_msg(to_email, "Your NthakaGuide account has been reactivated")
     msg.attach(MIMEText(plain,                                      "plain"))
     msg.attach(MIMEText(_wrap("Account Reactivated", body_html),    "html"))
-    _send_raw(msg)   # raises on failure — caller handles it
+    _send_raw(msg)   
     logger.info("Reactivation email sent to %s", to_email)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# EMAIL 6 — Analysis Complete
-# Sent in a BACKGROUND thread — heavy operation, user is not waiting for it.
-# NEVER raises — only logs on failure.
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def send_analysis_email(
     to_email: str,
@@ -450,9 +396,7 @@ def send_analysis_email(
         logger.warning("Analysis email failed for %s: %s", to_email, exc)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# JWT helpers
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def _secret() -> str:
     try:
@@ -484,9 +428,7 @@ def _decode_reset_token(token: str) -> str | None:
         return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Routes
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 @reset_bp.route("/forgot-password", methods=["POST"])
 def forgot_password():
@@ -520,7 +462,7 @@ def forgot_password():
 
     full_name = user.profile.full_name if user.profile else None
 
-    # Synchronous — user is waiting on screen for the code
+    
     try:
         msg = _build_otp_email(email, otp, full_name)
         _send_raw(msg)
@@ -612,12 +554,12 @@ def reset_password():
     db.session.commit()
     logger.info("Password reset completed for %s", email)
 
-    # Synchronous — security-critical notification, send before responding
+  
     full_name = user.profile.full_name if user.profile else None
     try:
         send_password_changed_email(email, full_name)
     except Exception as exc:
-        # Password is already saved — log the failure but don't block the user
+      
         logger.error("Password-changed email failed for %s: %s", email, exc)
 
     return jsonify({"message": "Password reset successfully. You can now log in."}), 200
