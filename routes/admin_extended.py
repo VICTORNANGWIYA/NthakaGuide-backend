@@ -1,13 +1,19 @@
 """
 routes/admin_extended.py
 ────────────────────────
-Extended admin endpoints for NthakaGuide:
-  • User management  (ban / activate / promote / delete / reset-password)
-  • CSV/Excel export (analyses, users, monthly report)
-  • Activity logs    (audit trail of admin actions)
-  • System alerts    (API health, failed logins, model status)
-  • Model control    (switch active model, view training metadata)
-  • Advanced search  (date range, district, crop, mode filters)
+Extended admin endpoints for NthakaGuide.
+
+CHANGES FROM PREVIOUS VERSION:
+  - _AUDIT_LOG in-memory list REMOVED — all audit entries now written to
+    the AuditLog database table so they survive restarts and are visible
+    to every admin, not just the one who triggered the action.
+  - _audit() helper writes to DB instead of a Python list.
+  - GET /admin/logs now queries AuditLog from the DB with pagination,
+    search, and optional action-type filter.
+  - GET /admin/export/audit-log added — download full audit trail as CSV.
+  - GET /admin/deletion-surveys added — admins can view all deletion
+    survey responses collected when users delete their accounts.
+  - GET /admin/export/deletion-surveys added — download as CSV.
 
 All routes require JWT + role == "admin".
 """
@@ -24,14 +30,15 @@ from flask import Blueprint, request, jsonify, make_response
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import func
 from werkzeug.security import generate_password_hash
+
+from models import db, User, Profile, AnalysisHistory, AuditLog, DeletionSurvey
 from routes.auth_reset import send_account_deactivated_email, send_account_reactivated_email
 
-from models import db, User, Profile, AnalysisHistory
-
-logger      = logging.getLogger("soilsense.admin_ext")
+logger       = logging.getLogger("NthakaGuide.admin_ext")
 admin_ext_bp = Blueprint("admin_ext", __name__, url_prefix="/admin")
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 # ── Auth guard ─────────────────────────────────────────────────────────────────
 def _require_admin():
@@ -42,18 +49,57 @@ def _require_admin():
     return user, None
 
 
-# ── Audit log helper ───────────────────────────────────────────────────────────
-_AUDIT_LOG: list[dict] = []   # in-memory for now; swap for DB table in production
+# ── Persistent audit helper ────────────────────────────────────────────────────
+def _audit(
+    admin_id: str,
+    action: str,
+    target_id: str = "",
+    target_label: str = "",
+    detail: str = "",
+) -> None:
+    """
+    Write an audit entry to the AuditLog table.
 
-def _audit(admin_id: str, action: str, target: str = "", detail: str = ""):
-    _AUDIT_LOG.append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "admin_id":  admin_id,
-        "action":    action,
-        "target":    target,
-        "detail":    detail,
-    })
-    logger.info("AUDIT  admin=%s  action=%s  target=%s  %s", admin_id, action, target, detail)
+    This replaces the old in-memory _AUDIT_LOG list. Every entry now
+    persists across server restarts and is visible to all admins.
+
+    IP address is captured from the request context when available.
+    """
+    try:
+        ip = request.remote_addr if request else None
+        entry = AuditLog(
+            admin_id     = admin_id or None,
+            action       = action,
+            target_id    = target_id   or None,
+            target_label = target_label or None,
+            detail       = detail      or None,
+            ip_address   = ip,
+        )
+        db.session.add(entry)
+        db.session.commit()
+        logger.info(
+            "AUDIT  admin=%s  action=%s  target=%s  %s",
+            admin_id, action, target_label or target_id, detail,
+        )
+    except Exception as exc:
+        logger.error("Failed to write audit log entry: %s", exc)
+        db.session.rollback()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CSV HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+def _csv_response(rows: list[dict], filename: str):
+    if not rows:
+        return jsonify({"error": "No data to export."}), 404
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+    writer.writeheader()
+    writer.writerows(rows)
+    resp = make_response(output.getvalue())
+    resp.headers["Content-Type"]        = "text/csv"
+    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -63,7 +109,6 @@ def _audit(admin_id: str, action: str, target: str = "", detail: str = ""):
 @admin_ext_bp.route("/users/<string:user_id>/deactivate", methods=["PUT"])
 @jwt_required()
 def deactivate_user(user_id: str):
-    """Disable a user account (is_active = False)."""
     admin, err = _require_admin()
     if err: return err
     if user_id == admin.id:
@@ -81,7 +126,6 @@ def deactivate_user(user_id: str):
 @admin_ext_bp.route("/users/<string:user_id>/activate", methods=["PUT"])
 @jwt_required()
 def activate_user(user_id: str):
-    """Re-enable a deactivated user account."""
     admin, err = _require_admin()
     if err: return err
 
@@ -97,7 +141,6 @@ def activate_user(user_id: str):
 @admin_ext_bp.route("/users/<string:user_id>/promote", methods=["PUT"])
 @jwt_required()
 def promote_user(user_id: str):
-    """Promote a regular user to admin (subject to MAX_ADMIN_ACCOUNTS cap)."""
     from routes.auth import MAX_ADMIN_ACCOUNTS, _admin_count
     admin, err = _require_admin()
     if err: return err
@@ -117,7 +160,6 @@ def promote_user(user_id: str):
 @admin_ext_bp.route("/users/<string:user_id>/demote", methods=["PUT"])
 @jwt_required()
 def demote_user(user_id: str):
-    """Demote an admin back to regular user."""
     admin, err = _require_admin()
     if err: return err
     if user_id == admin.id:
@@ -135,7 +177,6 @@ def demote_user(user_id: str):
 @admin_ext_bp.route("/users/<string:user_id>", methods=["DELETE"])
 @jwt_required()
 def delete_user(user_id: str):
-    """Permanently delete a user and all their data."""
     admin, err = _require_admin()
     if err: return err
     if user_id == admin.id:
@@ -152,11 +193,6 @@ def delete_user(user_id: str):
 @admin_ext_bp.route("/users/<string:user_id>/reset-password", methods=["PUT"])
 @jwt_required()
 def reset_password(user_id: str):
-    """
-    PUT /admin/users/<id>/reset-password
-    Body: { "new_password": str }
-    Admin sets a new password directly (no old password needed).
-    """
     from routes.auth import _validate_password
     admin, err = _require_admin()
     if err: return err
@@ -176,27 +212,163 @@ def reset_password(user_id: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ADVANCED SEARCH / FILTER
+#  DELETION SURVEYS
+#  Populated by POST /auth/delete-account (see auth route below).
+#  Admins read these here to understand why users are leaving.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@admin_ext_bp.route("/deletion-surveys", methods=["GET"])
+@jwt_required()
+def deletion_surveys():
+    """
+    GET /admin/deletion-surveys
+    Returns paginated deletion survey responses so admins can understand
+    why users are leaving and prioritise improvements accordingly.
+    """
+    _, err = _require_admin()
+    if err: return err
+
+    page     = request.args.get("page",     1,  type=int)
+    per_page = min(request.args.get("per_page", 20, type=int), 100)
+
+    pagination = (
+        DeletionSurvey.query
+        .order_by(DeletionSurvey.created_at.desc())
+        .paginate(page=page, per_page=per_page, error_out=False)
+    )
+
+    # Aggregate reason counts for summary
+    reason_counts = (
+        db.session.query(
+            DeletionSurvey.reason_label,
+            func.count().label("count"),
+        )
+        .group_by(DeletionSurvey.reason_label)
+        .order_by(func.count().desc())
+        .all()
+    )
+
+    return jsonify({
+        "items":         [s.to_dict() for s in pagination.items],
+        "total":         pagination.total,
+        "page":          pagination.page,
+        "pages":         pagination.pages,
+        "per_page":      pagination.per_page,
+        "reason_summary": [
+            {"reason": r.reason_label, "count": r.count}
+            for r in reason_counts
+        ],
+    })
+
+
+@admin_ext_bp.route("/export/deletion-surveys", methods=["GET"])
+@jwt_required()
+def export_deletion_surveys():
+    """GET /admin/export/deletion-surveys — download all survey responses as CSV."""
+    admin, err = _require_admin()
+    if err: return err
+
+    surveys = DeletionSurvey.query.order_by(DeletionSurvey.created_at.desc()).all()
+    rows    = [s.to_dict() for s in surveys]
+    _audit(admin.id, "export_deletion_surveys", "", f"{len(rows)} rows")
+    fname = f"nthakaGuide_deletion_surveys_{datetime.now().strftime('%Y%m%d')}.csv"
+    return _csv_response(rows, fname)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  AUDIT LOGS  (persistent DB — replaces in-memory _AUDIT_LOG)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@admin_ext_bp.route("/logs", methods=["GET"])
+@jwt_required()
+def get_logs():
+    """
+    GET /admin/logs
+    Query params: page, per_page, action (filter by action type), search (admin email)
+
+    Now reads from the AuditLog DB table instead of the in-memory list.
+    This means:
+      - Logs persist across server restarts
+      - All admins see ALL admin actions, not just their own session
+      - Logs are paginated and filterable
+    """
+    _, err = _require_admin()
+    if err: return err
+
+    page     = request.args.get("page",     1,  type=int)
+    per_page = min(request.args.get("per_page", 50, type=int), 200)
+    action   = request.args.get("action",   "").strip()
+    search   = request.args.get("search",   "").strip()
+
+    query = AuditLog.query
+
+    if action:
+        query = query.filter(AuditLog.action == action)
+
+    if search:
+        # Search by admin email via join
+        query = (
+            query
+            .join(User, AuditLog.admin_id == User.id, isouter=True)
+            .filter(User.email.ilike(f"%{search}%"))
+        )
+
+    pagination = (
+        query
+        .order_by(AuditLog.created_at.desc())
+        .paginate(page=page, per_page=per_page, error_out=False)
+    )
+
+    # Distinct action types for filter dropdown in frontend
+    action_types = [
+        row[0] for row in
+        db.session.query(func.distinct(AuditLog.action))
+        .order_by(AuditLog.action)
+        .all()
+    ]
+
+    return jsonify({
+        "items":        [log.to_dict() for log in pagination.items],
+        "total":        pagination.total,
+        "page":         pagination.page,
+        "pages":        pagination.pages,
+        "per_page":     pagination.per_page,
+        "action_types": action_types,
+    })
+
+
+@admin_ext_bp.route("/export/audit-log", methods=["GET"])
+@jwt_required()
+def export_audit_log():
+    """GET /admin/export/audit-log — download full audit trail as CSV."""
+    admin, err = _require_admin()
+    if err: return err
+
+    logs  = AuditLog.query.order_by(AuditLog.created_at.desc()).all()
+    rows  = [l.to_dict() for l in logs]
+    _audit(admin.id, "export_audit_log", "", f"{len(rows)} rows")
+    fname = f"nthakaGuide_audit_log_{datetime.now().strftime('%Y%m%d')}.csv"
+    return _csv_response(rows, fname)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ADVANCED SEARCH
 # ══════════════════════════════════════════════════════════════════════════════
 
 @admin_ext_bp.route("/analyses/search", methods=["GET"])
 @jwt_required()
 def search_analyses():
-    """
-    GET /admin/analyses/search
-    Query params: district, crop, mode, date_from (YYYY-MM-DD), date_to, page, per_page
-    """
     _, err = _require_admin()
     if err: return err
 
-    page       = request.args.get("page",      1,  type=int)
-    per_page   = min(request.args.get("per_page", 20, type=int), 100)
-    district   = request.args.get("district",  "").strip()
-    crop       = request.args.get("crop",      "").strip()
-    mode       = request.args.get("mode",      "").strip()
-    date_from  = request.args.get("date_from", "").strip()
-    date_to    = request.args.get("date_to",   "").strip()
-    search     = request.args.get("search",    "").strip()
+    page      = request.args.get("page",      1,  type=int)
+    per_page  = min(request.args.get("per_page", 20, type=int), 100)
+    district  = request.args.get("district",  "").strip()
+    crop      = request.args.get("crop",      "").strip()
+    mode      = request.args.get("mode",      "").strip()
+    date_from = request.args.get("date_from", "").strip()
+    date_to   = request.args.get("date_to",   "").strip()
+    search    = request.args.get("search",    "").strip()
 
     query = AnalysisHistory.query
 
@@ -252,23 +424,9 @@ def search_analyses():
 #  EXPORT / REPORTS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _csv_response(rows: list[dict], filename: str):
-    if not rows:
-        return jsonify({"error": "No data to export."}), 404
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=rows[0].keys())
-    writer.writeheader()
-    writer.writerows(rows)
-    resp = make_response(output.getvalue())
-    resp.headers["Content-Type"]        = "text/csv"
-    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
-    return resp
-
-
 @admin_ext_bp.route("/export/analyses", methods=["GET"])
 @jwt_required()
 def export_analyses():
-    """GET /admin/export/analyses  — download all analyses as CSV."""
     admin, err = _require_admin()
     if err: return err
 
@@ -302,20 +460,17 @@ def export_analyses():
             "user_email":       u.email      if u else "",
             "user_name":        p.full_name  if p and p.full_name else "",
             "district":         a.district,
-            "climate_zone":     a.climate_zone or "",
-            "input_mode":       a.input_mode or "",
+            "climate_zone":     a.climate_zone     or "",
+            "input_mode":       a.input_mode        or "",
             "recommended_crop": a.recommended_crop,
-            "crop_score":       a.crop_score or "",
-            "crop_confidence":  a.crop_confidence or "",
-            "fertilizer_type":  a.fertilizer_type or "",
-            "yield_predicted":  a.yield_predicted or "",
-            "yield_category":   a.yield_category or "",
-            "pest_risk_level":  a.pest_risk_level or "",
-            "ph":               a.ph or "",
-            "nitrogen":         a.nitrogen or "",
-            "phosphorus":       a.phosphorus or "",
-            "potassium":        a.potassium or "",
-            "rainfall_mm":      a.rainfall_mm or "",
+            "crop_score":       a.crop_score        or "",
+            "crop_confidence":  a.crop_confidence   or "",
+            "fertilizer_type":  a.fertilizer_type   or "",
+            "ph":               a.ph                or "",
+            "nitrogen":         a.nitrogen          or "",
+            "phosphorus":       a.phosphorus        or "",
+            "potassium":        a.potassium         or "",
+            "rainfall_mm":      a.rainfall_mm       or "",
             "created_at":       a.created_at.isoformat(),
         })
 
@@ -327,7 +482,6 @@ def export_analyses():
 @admin_ext_bp.route("/export/users", methods=["GET"])
 @jwt_required()
 def export_users():
-    """GET /admin/export/users  — download all users as CSV."""
     admin, err = _require_admin()
     if err: return err
 
@@ -337,14 +491,14 @@ def export_users():
         p     = Profile.query.filter_by(user_id=u.id).first()
         count = AnalysisHistory.query.filter_by(user_id=u.id).count()
         rows.append({
-            "id":         u.id,
-            "email":      u.email,
-            "full_name":  p.full_name  if p else "",
-            "phone":      p.phone      if p else "",
-            "district":   p.district   if p else "",
-            "is_active":  u.is_active,
-            "analyses":   count,
-            "joined":     u.created_at.isoformat(),
+            "id":        u.id,
+            "email":     u.email,
+            "full_name": p.full_name if p else "",
+            "phone":     p.phone     if p else "",
+            "district":  p.district  if p else "",
+            "is_active": u.is_active,
+            "analyses":  count,
+            "joined":    u.created_at.isoformat(),
         })
 
     _audit(admin.id, "export_users", "", f"{len(rows)} rows")
@@ -355,17 +509,11 @@ def export_users():
 @admin_ext_bp.route("/export/monthly-report", methods=["GET"])
 @jwt_required()
 def export_monthly_report():
-    """
-    GET /admin/export/monthly-report  — last 12 months summary CSV.
-    FIX: Uses Python-side grouping instead of func.strftime which is
-    SQLite-only and fails on PostgreSQL and other databases.
-    """
     admin, err = _require_admin()
     if err: return err
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=365)
 
-    # Fetch timestamps + user_id + district in one query
     records = (
         AnalysisHistory.query
         .filter(AnalysisHistory.created_at >= cutoff)
@@ -377,7 +525,6 @@ def export_monthly_report():
         .all()
     )
 
-    # Group by "YYYY-MM" in Python
     month_data: dict[str, dict] = defaultdict(lambda: {
         "analyses":     0,
         "unique_users": set(),
@@ -410,54 +557,24 @@ def export_monthly_report():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ACTIVITY LOGS / AUDIT TRAIL
-# ══════════════════════════════════════════════════════════════════════════════
-
-@admin_ext_bp.route("/logs", methods=["GET"])
-@jwt_required()
-def get_logs():
-    """GET /admin/logs  — most recent audit log entries (newest first)."""
-    _, err = _require_admin()
-    if err: return err
-
-    page     = request.args.get("page",     1,  type=int)
-    per_page = min(request.args.get("per_page", 50, type=int), 200)
-    entries  = list(reversed(_AUDIT_LOG))
-    start    = (page - 1) * per_page
-    end      = start + per_page
-
-    return jsonify({
-        "items":    entries[start:end],
-        "total":    len(entries),
-        "page":     page,
-        "per_page": per_page,
-    })
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 #  SYSTEM ALERTS
 # ══════════════════════════════════════════════════════════════════════════════
 
 @admin_ext_bp.route("/alerts", methods=["GET"])
 @jwt_required()
 def get_alerts():
-    """
-    GET /admin/alerts  — auto-generated system alerts based on DB state.
-    Returns a list of { level, title, message, timestamp }.
-    """
     _, err = _require_admin()
     if err: return err
 
     alerts = []
     now    = datetime.now(timezone.utc)
 
-    # 1. Check for analysis spike (>50% more than 24h average)
-    yesterday = now - timedelta(days=1)
-    two_days  = now - timedelta(days=2)
+    yesterday   = now - timedelta(days=1)
+    two_days    = now - timedelta(days=2)
     today_count     = AnalysisHistory.query.filter(AnalysisHistory.created_at >= yesterday).count()
     yesterday_count = AnalysisHistory.query.filter(
         AnalysisHistory.created_at >= two_days,
-        AnalysisHistory.created_at < yesterday
+        AnalysisHistory.created_at < yesterday,
     ).count()
     if yesterday_count > 0 and today_count > yesterday_count * 1.5:
         alerts.append({
@@ -467,24 +584,21 @@ def get_alerts():
             "timestamp": now.isoformat(),
         })
 
-    # 2. Check for inactive districts (no analyses in 30 days)
     thirty_days_ago = now - timedelta(days=30)
     active_30 = (
         db.session.query(func.count(func.distinct(AnalysisHistory.district)))
         .filter(AnalysisHistory.created_at >= thirty_days_ago)
         .scalar() or 0
     )
-    total_districts = 28
-    inactive = total_districts - active_30
+    inactive = 28 - active_30
     if inactive > 5:
         alerts.append({
             "level":     "warning",
             "title":     "Low District Coverage",
-            "message":   f"{inactive} of {total_districts} districts have had no analyses in the past 30 days.",
+            "message":   f"{inactive} of 28 districts have had no analyses in the past 30 days.",
             "timestamp": now.isoformat(),
         })
 
-    # 3. Check for deactivated users
     deactivated = User.query.filter_by(is_active=False, role="user").count()
     if deactivated > 0:
         alerts.append({
@@ -494,8 +608,7 @@ def get_alerts():
             "timestamp": now.isoformat(),
         })
 
-    # 4. Check model files
-    model_dir    = os.path.join(BASE, "models")
+    model_dir      = os.path.join(BASE, "models")
     missing_models = [
         f for f in ["best_crop_model.pkl", "best_fert_model.pkl", "crop_scaler.pkl"]
         if not os.path.exists(os.path.join(model_dir, f))
@@ -508,7 +621,6 @@ def get_alerts():
             "timestamp": now.isoformat(),
         })
 
-    # 5. No analyses in 48 hours
     two_days_ago = now - timedelta(hours=48)
     recent = AnalysisHistory.query.filter(AnalysisHistory.created_at >= two_days_ago).count()
     if recent == 0:
@@ -517,6 +629,19 @@ def get_alerts():
             "title":     "No Recent Activity",
             "message":   "No analyses have been submitted in the past 48 hours.",
             "timestamp": now.isoformat(),
+        })
+
+    # Alert if deletion survey responses exist (prompt admin to review)
+    survey_count = DeletionSurvey.query.count()
+    if survey_count > 0:
+        unreviewed = DeletionSurvey.query.order_by(
+            DeletionSurvey.created_at.desc()
+        ).first()
+        alerts.append({
+            "level":     "info",
+            "title":     f"Deletion Feedback — {survey_count} response(s)",
+            "message":   f"Users have submitted {survey_count} account-deletion survey(s). Review them in the Surveys tab.",
+            "timestamp": unreviewed.created_at.isoformat() if unreviewed else now.isoformat(),
         })
 
     if not alerts:
@@ -534,21 +659,19 @@ def get_alerts():
 #  MODEL CONTROL
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Track which algorithm is currently "active" (persisted in memory; use DB in prod)
 _ACTIVE_MODEL = {"algorithm": "random_forest"}
 
 AVAILABLE_MODELS = [
-    {"id": "random_forest",    "label": "Random Forest",     "accuracy": "99.55%", "file": "best_crop_model.pkl"},
-    {"id": "gradient_boosting","label": "Gradient Boosting", "accuracy": "98.18%", "file": "gb_crop_model.pkl"},
-    {"id": "decision_tree",    "label": "Decision Tree",     "accuracy": "98.64%", "file": "dt_crop_model.pkl"},
-    {"id": "naive_bayes",      "label": "Naive Bayes",       "accuracy": "99.49%", "file": "nb_crop_model.pkl"},
+    {"id": "random_forest",     "label": "Random Forest",     "accuracy": "94.66%", "file": "best_crop_model.pkl"},
+    {"id": "gradient_boosting", "label": "Gradient Boosting", "accuracy": "94.43%", "file": "gb_crop_model.pkl"},
+    {"id": "decision_tree",     "label": "Decision Tree",     "accuracy": "91.98%", "file": "dt_crop_model.pkl"},
+    {"id": "logistic_regression","label": "Logistic Regression","accuracy": "60.59%","file": "lr_crop_model.pkl"},
 ]
 
 
 @admin_ext_bp.route("/model/status", methods=["GET"])
 @jwt_required()
 def model_status():
-    """GET /admin/model/status — list models with file presence and active flag."""
     _, err = _require_admin()
     if err: return err
 
@@ -558,25 +681,14 @@ def model_status():
         path   = os.path.join(model_dir, m["file"])
         exists = os.path.exists(path)
         size   = f"{os.path.getsize(path) / 1024:.1f} KB" if exists else "—"
-        result.append({
-            **m,
-            "present": exists,
-            "size":    size,
-            "active":  m["id"] == _ACTIVE_MODEL["algorithm"],
-        })
-    return jsonify({
-        "active_model": _ACTIVE_MODEL["algorithm"],
-        "models":       result,
-    })
+        result.append({**m, "present": exists, "size": size,
+                        "active": m["id"] == _ACTIVE_MODEL["algorithm"]})
+    return jsonify({"active_model": _ACTIVE_MODEL["algorithm"], "models": result})
 
 
 @admin_ext_bp.route("/model/switch", methods=["PUT"])
 @jwt_required()
 def switch_model():
-    """
-    PUT /admin/model/switch
-    Body: { "algorithm": "random_forest" | "gradient_boosting" | ... }
-    """
     admin, err = _require_admin()
     if err: return err
 
@@ -592,34 +704,30 @@ def switch_model():
         return jsonify({"error": f"Model file '{model_map[algo]}' not found on disk."}), 404
 
     _ACTIVE_MODEL["algorithm"] = algo
-    _audit(admin.id, "switch_model", algo, f"switched active model to {algo}")
-    logger.info("Active model switched to %s by admin %s", algo, admin.id)
+    _audit(admin.id, "switch_model", algo, algo, f"switched active model to {algo}")
     return jsonify({"message": f"Active model switched to {algo}.", "active_model": algo})
 
 
 @admin_ext_bp.route("/model/training-info", methods=["GET"])
 @jwt_required()
 def training_info():
-    """GET /admin/model/training-info — metadata about current model."""
     _, err = _require_admin()
     if err: return err
 
-    # Read training_report.json if it exists, otherwise return static info
     report_path = os.path.join(BASE, "models", "training_report.json")
     if os.path.exists(report_path):
         with open(report_path) as f:
             return jsonify(json.load(f))
 
-    # Fallback static metadata
     return jsonify({
-        "algorithm":        _ACTIVE_MODEL["algorithm"],
-        "trained_on":       "2025-01-15",
-        "training_rows":    66341,
-        "feature_count":    7,
-        "features":         ["N", "P", "K", "temperature", "humidity", "ph", "rainfall"],
-        "classes":          28,
-        "accuracy":         0.9955,
-        "f1_score":         0.9954,
-        "cv_mean":          0.9949,
-        "note":             "training_report.json not found — showing defaults",
+        "algorithm":     _ACTIVE_MODEL["algorithm"],
+        "trained_on":    "2025-01-15",
+        "training_rows": 30499,
+        "feature_count": 7,
+        "features":      ["N", "P", "K", "temperature", "humidity", "ph", "rainfall"],
+        "classes":       41,
+        "accuracy":      0.9466,
+        "f1_score":      0.9469,
+        "cv_mean":       0.8524,
+        "note":          "training_report.json not found — showing defaults",
     })

@@ -10,7 +10,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from models import db, User, ChatLog          # ChatLog added to models.py
 
 admin_chatbot_bp = Blueprint("admin_chatbot", __name__)
-logger = logging.getLogger("soilsense.admin_chatbot")
+logger = logging.getLogger("NthakaGuide.admin_chatbot")
 
 
 def _require_admin():
