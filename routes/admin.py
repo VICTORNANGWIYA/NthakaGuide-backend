@@ -25,7 +25,7 @@ from sqlalchemy import func
 
 from models import db, User, Profile, AnalysisHistory
 
-logger   = logging.getLogger("soilsense.admin")
+logger   = logging.getLogger("NthakaGuide.admin")
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
 
 
@@ -376,3 +376,40 @@ def fertilizers():
         for r in rows
     ]
     return jsonify(result)
+
+    # ── GET /admin/deletion-surveys ────────────────────────────────────────────────
+@admin_bp.route("/deletion-surveys", methods=["GET"])
+@jwt_required()
+def deletion_surveys():
+    _, err = _require_admin()
+    if err:
+        return err
+
+    from models import DeletionSurvey
+    from collections import Counter
+
+    surveys = (
+        DeletionSurvey.query
+        .order_by(DeletionSurvey.created_at.desc())
+        .all()
+    )
+
+    counts  = Counter(s.reason_label for s in surveys)
+    summary = [{"reason": k, "count": v} for k, v in counts.most_common()]
+
+    return jsonify({
+        "items": [
+            {
+                "id":           str(s.id),
+                "user_id":      str(s.user_id),
+                "user_email":   s.user_email,
+                "reason":       s.reason,
+                "reason_label": s.reason_label,
+                "details":      s.details,
+                "created_at":   s.created_at.isoformat(),
+            }
+            for s in surveys
+        ],
+        "total":          len(surveys),
+        "reason_summary": summary,
+    })
