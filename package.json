@@ -1,0 +1,21 @@
+{
+  "name": "nthakaguide-backend",
+  "version": "1.0.0",
+  "description": "Standalone Python/Flask backend that replaces the three Supabase Edge Functions:\r `recommend`, `rainfall`, and `chat`.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VICTORNANGWIYA/NthakaGuide-backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/VICTORNANGWIYA/NthakaGuide-backend/issues"
+  },
+  "homepage": "https://github.com/VICTORNANGWIYA/NthakaGuide-backend#readme"
+}
