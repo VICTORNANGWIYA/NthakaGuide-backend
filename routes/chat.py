@@ -16,7 +16,7 @@ from flask_jwt_extended import get_jwt_identity, verify_jwt_in_request
 from models import db, ChatLog
 
 chat_bp = Blueprint("chat", __name__)
-logger  = logging.getLogger("soilsense.chat")
+logger  = logging.getLogger("NthakaGuide.chat")
 
 HF_API_KEY = os.environ.get("HF_TOKEN")
 HF_MODEL   = "meta-llama/Llama-3.1-8B-Instruct:cerebras"
