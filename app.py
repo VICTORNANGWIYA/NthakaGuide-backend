@@ -12,24 +12,26 @@ load_dotenv()
 
 from config import Config
 from models import db
+from extensions.cache_ext import cache                    # ← single source of truth
+from utils.satellite_rainfall import SEASON_CACHE_TIMEOUT
 
-from routes.recommend import recommend_bp
-from routes.rainfall  import rainfall_bp
-from routes.chat      import chat_bp
-from routes.admin     import admin_bp
-from routes.admin_chatbot     import admin_chatbot_bp
+from routes.recommend      import recommend_bp
+from routes.rainfall       import rainfall_bp
+from routes.chat           import chat_bp
+from routes.admin          import admin_bp
+from routes.admin_chatbot  import admin_chatbot_bp
 from routes.admin_extended import admin_ext_bp
-from routes.auth      import auth_bp
-from routes.profiles  import profiles_bp
-from routes.analysis  import analysis_bp
-
+from routes.auth           import auth_bp
+from routes.profiles       import profiles_bp
+from routes.analysis       import analysis_bp
+from routes.auth_reset     import reset_bp
 
 logging.basicConfig(
     level   = logging.INFO,
     format  = "%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
     datefmt = "%Y-%m-%d %H:%M:%S",
 )
-logger = logging.getLogger("soilsense")
+logger = logging.getLogger("NthakaGuide")
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -63,10 +65,16 @@ def create_app(config_object=Config) -> Flask:
         minutes=config_object.JWT_ACCESS_TOKEN_EXPIRES_MINUTES
     )
 
+    
+    app.config["CACHE_TYPE"]            = "FileSystemCache"
+    app.config["CACHE_DIR"]             = "cache/rainfall"
+    app.config["CACHE_DEFAULT_TIMEOUT"] = SEASON_CACHE_TIMEOUT
+    cache.init_app(app)                                   
+
     CORS(app, supports_credentials=True)
-    
+
     app.register_blueprint(admin_chatbot_bp)
-    
+
     db.init_app(app)
     Migrate(app, db)
     jwt = JWTManager(app)
@@ -83,16 +91,16 @@ def create_app(config_object=Config) -> Flask:
     def expired_token(jwt_header, jwt_payload):
         return jsonify({"error": "Token has expired. Please log in again."}), 401
 
-    # ── Blueprints ─────────────────────────────────────────────────────────────
     app.register_blueprint(recommend_bp, url_prefix="/api")
     app.register_blueprint(rainfall_bp,  url_prefix="/api")
     app.register_blueprint(chat_bp,      url_prefix="/api")
 
-    app.register_blueprint(auth_bp)       # /auth/*
-    app.register_blueprint(profiles_bp)   # /profiles/*
-    app.register_blueprint(analysis_bp)   # /analysis/*
-    app.register_blueprint(admin_bp)      # /admin/*
-    app.register_blueprint(admin_ext_bp)   # /admin/* (extended)  ← must be inside create_app
+    app.register_blueprint(auth_bp)
+    app.register_blueprint(profiles_bp)
+    app.register_blueprint(analysis_bp)
+    app.register_blueprint(admin_bp)
+    app.register_blueprint(admin_ext_bp)
+    app.register_blueprint(reset_bp)
 
     @app.route("/")
     def home():
@@ -158,8 +166,7 @@ def create_app(config_object=Config) -> Flask:
                 "live_rainfall_forecast":  True,
                 "satellite_rainfall":      True,
                 "crop_fertilizer_plans":   True,
-                "yield_prediction":        True,
-                "pest_disease_risk":       True,
+               
                 "land_use_filtering":      True,
                 "crop_rotation_advice":    True,
                 "user_authentication":     True,
