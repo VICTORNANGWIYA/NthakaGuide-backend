@@ -9,7 +9,7 @@ class Config:
     # ── Database ───────────────────────────────────────────────────────────────
     SQLALCHEMY_DATABASE_URI = os.environ.get(
         "DATABASE_URL",
-        "postgresql://postgres:dayire@localhost:5432/NthakaGuide",
+        "postgresql://***",
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ENGINE_OPTIONS = {
