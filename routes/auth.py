@@ -2,9 +2,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Authentication routes: register, login, me, change-password, delete-account.
 #
-# Welcome emails and password-changed emails are fired in daemon threads so
-# they never block the HTTP response — even on a slow network the user gets
-# their JWT immediately after registration.
+# Email sending policy:
+#   BACKGROUND: send_welcome_email only — user already has their JWT.
+#   SYNCHRONOUS: send_password_changed_email — security notification that
+#                must be delivered before the response is returned.
 # ─────────────────────────────────────────────────────────────────────────────
 
 import re
@@ -128,12 +129,14 @@ def _admin_slots_available() -> bool:
     return _admin_count() < MAX_ADMIN_ACCOUNTS
 
 
-# ── Background email helper ────────────────────────────────────────────────────
+# ── Background email dispatcher ────────────────────────────────────────────────
 
 def _fire_email(fn, *args) -> None:
     """
-    Run *fn(*args)* in a daemon thread so the HTTP response is never blocked.
-    Errors inside fn are already caught and logged by the email functions.
+    Run fn(*args) in a daemon thread so the HTTP response is never blocked.
+    Use ONLY for non-critical emails where the user does not need to wait
+    (welcome email, analysis summary email).
+    Errors inside fn are caught and logged by the email function itself.
     """
     threading.Thread(target=fn, args=args, daemon=True).start()
 
@@ -157,9 +160,8 @@ def register():
     Body: { email, password, role?, full_name, phone?, district? }
     Returns 201: { access_token, user, profile }
 
-    Account is created and the JWT is returned immediately.
-    The welcome email is sent in a background thread — network latency or SMTP
-    failures never delay or break account creation.
+    Welcome email is sent in a background thread — the JWT is returned
+    immediately regardless of SMTP latency or failures.
     """
     data = request.get_json(silent=True) or {}
 
@@ -209,7 +211,7 @@ def register():
         role     = role,
     )
     db.session.add(user)
-    db.session.flush()   # get user.id before commit
+    db.session.flush()
 
     profile = Profile(
         user_id   = user.id,
@@ -223,7 +225,7 @@ def register():
     token = create_access_token(identity=user.id)
     logger.info("Registered: %s (role=%s, district=%s)", email, role, district)
 
-    # ── Welcome email in background — never blocks the response ───────────────
+    # Background — user already has their JWT, welcome email is non-blocking
     from routes.auth_reset import send_welcome_email
     _fire_email(send_welcome_email, email, full_name or None)
 
@@ -281,27 +283,51 @@ def me():
     })
 
 
+DELETION_REASONS = {
+    "not_useful":        "The app is not useful for my farming needs",
+    "too_complicated":   "The app is too complicated to use",
+    "poor_accuracy":     "Crop or fertilizer recommendations are inaccurate",
+    "no_internet":       "I do not have reliable internet access",
+    "privacy_concerns":  "I have concerns about my data and privacy",
+    "switching_app":     "I am switching to a different application",
+    "temporary":         "I am taking a break and may return",
+    "other":             "Other reason",
+}
+
 # ── DELETE /auth/delete-account ───────────────────────────────────────────────
 @auth_bp.route("/delete-account", methods=["DELETE"])
 @jwt_required()
 def delete_account():
-    """
-    DELETE /auth/delete-account
-    Body: { password }  — requires password confirmation for safety.
-    """
     user_id  = get_jwt_identity()
     user     = User.query.get_or_404(user_id)
     data     = request.get_json(silent=True) or {}
-    password = data.get("password") or ""
+    password = (data.get("password") or "").strip()
+    reason   = (data.get("reason")   or "").strip()
+    details  = (data.get("details")  or "").strip()[:1000]
 
     if not password:
         return _bad("Password is required to delete your account.")
     if not check_password_hash(user.password, password):
         return _bad("Incorrect password.", 401)
+    if not reason:
+        return _bad("Please select a reason for deleting your account.")
+    if reason not in DELETION_REASONS:
+        return _bad(f"Invalid reason. Must be one of: {list(DELETION_REASONS.keys())}")
 
-    db.session.delete(user)   # cascade handles Profile via FK
-    db.session.commit()
-    logger.info("Account deleted: user_id=%s", user_id)
+    from models import DeletionSurvey
+    survey = DeletionSurvey(
+        user_id      = str(user.id),
+        user_email   = user.email,
+        reason       = reason,
+        reason_label = DELETION_REASONS[reason],
+        details      = details or None,
+    )
+    db.session.add(survey)
+    db.session.flush()   # write survey first, before user is gone
+
+    db.session.delete(user)
+    db.session.commit()  # atomic: survey + deletion in one transaction
+    logger.info("Account deleted: user_id=%s reason=%s", user_id, reason)
     return jsonify({"message": "Account deleted successfully."})
 
 
@@ -313,7 +339,10 @@ def change_password():
     PUT /auth/change-password
     Body: { old_password, new_password }
 
-    Password-changed confirmation email is sent in a background thread.
+    Password-changed confirmation email is sent SYNCHRONOUSLY — this is a
+    security-critical notification. The user must receive it before the
+    response is returned. If SMTP fails, we log the error but still return
+    success (the password is already saved — do not roll back over an email).
     """
     user_id = get_jwt_identity()
     user    = User.query.get_or_404(user_id)
@@ -339,9 +368,13 @@ def change_password():
     db.session.commit()
     logger.info("Password changed for user %s", user_id)
 
-    # ── Confirmation email in background — never blocks the response ───────────
+    # Synchronous — security notification must be sent before responding
     from routes.auth_reset import send_password_changed_email
     full_name = user.profile.full_name if user.profile else None
-    _fire_email(send_password_changed_email, user.email, full_name)
+    try:
+        send_password_changed_email(user.email, full_name)
+    except Exception as exc:
+        # Password is already saved — log and continue, do not block the user
+        logger.error("Password-changed email failed for user %s: %s", user_id, exc)
 
     return jsonify({"message": "Password updated successfully."})
