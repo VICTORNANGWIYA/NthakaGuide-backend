@@ -3,7 +3,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from models import db, AnalysisHistory
 
-logger = logging.getLogger("soilsense.analysis")
+logger = logging.getLogger("NthakaGuide.analysis")
 analysis_bp = Blueprint("analysis", __name__, url_prefix="/analysis")
 
 
@@ -23,8 +23,8 @@ def add_analysis():
     crops      = data.get("all_crops", [])
     top_crop   = crops[0] if crops else {}
     fert_plan  = top_crop.get("fertilizerPlan", {})
-    yield_pred = top_crop.get("yieldPrediction", {})
-    pest_risk  = top_crop.get("pestDiseaseRisk", {})
+    #yield_pred = top_crop.get("yieldPrediction", {})
+    #pest_risk  = top_crop.get("pestDiseaseRisk", {})
 
     record = AnalysisHistory(
         user_id = user_id,
@@ -55,10 +55,10 @@ def add_analysis():
         crop_confidence  = data.get("crop_confidence"),
         crop_season      = data.get("crop_season"),
         fertilizer_type  = fert_plan.get("basal") or data.get("fertilizer_type"),
-        yield_predicted  = yield_pred.get("predicted_tha") or data.get("yield_predicted"),
-        yield_potential  = yield_pred.get("potential_tha") or data.get("yield_potential"),
-        yield_category   = yield_pred.get("yield_category") or data.get("yield_category"),
-        pest_risk_level  = pest_risk.get("summary", {}).get("level") or data.get("pest_risk_level"),
+        #yield_predicted  = yield_pred.get("predicted_tha") or data.get("yield_predicted"),
+        #yield_potential  = yield_pred.get("potential_tha") or data.get("yield_potential"),
+        #yield_category   = yield_pred.get("yield_category") or data.get("yield_category"),
+        #pest_risk_level  = pest_risk.get("summary", {}).get("level") or data.get("pest_risk_level"),
 
       
         all_crops_json   = crops,
