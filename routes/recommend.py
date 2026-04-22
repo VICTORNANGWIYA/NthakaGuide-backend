@@ -1,6 +1,7 @@
 
+
 import os
-import pickle
+import joblib          # ← replaces pickle
 import numpy as np
 from flask import Blueprint, request, jsonify
 
@@ -26,9 +27,10 @@ recommend_bp = Blueprint("recommend", __name__)
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-crop_model   = pickle.load(open(os.path.join(BASE, "models/best_crop_model.pkl"),    "rb"))
-crop_scaler  = pickle.load(open(os.path.join(BASE, "models/crop_scaler.pkl"),        "rb"))
-crop_encoder = pickle.load(open(os.path.join(BASE, "models/crop_label_encoder.pkl"), "rb"))
+
+crop_model   = joblib.load(os.path.join(BASE, "models/best_crop_model.pkl"))
+crop_scaler  = joblib.load(os.path.join(BASE, "models/crop_scaler.pkl"))
+crop_encoder = joblib.load(os.path.join(BASE, "models/crop_label_encoder.pkl"))
 
 
 
@@ -62,6 +64,7 @@ def _resolve_display_name(crop_raw: str) -> str:
         or _BUILT_IN_CROP_MAP.get(crop_raw)
         or crop_raw.replace("_", " ").title()
     )
+
 
 
 
@@ -119,7 +122,7 @@ def _build_fertilizer_plan(
     """
     soil_type = _infer_soil_type(ph, organic, moisture)
 
-    # ── 1. Rainfall/crop/pH-aware application plan ────────────────────────
+    
     rain_plan = adjust_for_rainfall(
         annual_mm  = annual_mm,
         crop       = crop_raw,
@@ -127,7 +130,7 @@ def _build_fertilizer_plan(
         soil_type  = soil_type,
     )
 
-    # ── 2. Deficiency-corrective plan from soil-test values ───────────────
+    
     deficiency_items = generate_fertilizer_plan(
         N             = nitrogen,
         P             = phosphorus,
@@ -139,7 +142,7 @@ def _build_fertilizer_plan(
         crop          = crop_raw,
     )
 
-    # ── 3. Convert rain_plan["plan"] steps → frontend items ──────────────
+    
     rain_items = []
     for step in rain_plan.get("plan", []):
         products   = step.get("products", [])
@@ -154,7 +157,7 @@ def _build_fertilizer_plan(
             "products":        products,
         })
 
-    # ── 4. Convert deficiency items → frontend items ──────────────────────
+    
     def_items = []
     for d in deficiency_items:
         def_items.append({
@@ -167,8 +170,8 @@ def _build_fertilizer_plan(
             "products":        [d.get("type", "")],
         })
 
-    # ── 5. Merge: application plan first, then any deficiency corrections
-    #        that aren't already covered by the application plan
+    
+    
     merged_items = rain_items[:]
 
     rain_product_types = {
@@ -176,8 +179,8 @@ def _build_fertilizer_plan(
     }
 
     for d_item in def_items:
-        # Skip lime/sulphur/organic-matter items — these are standalone
-        # corrections that should always surface
+        
+       
         is_correction = any(
             kw in d_item["type"].lower()
             for kw in ("lime", "sulphur", "compost", "manure", "maintenance")
@@ -187,10 +190,10 @@ def _build_fertilizer_plan(
         if is_correction or not already_covered:
             merged_items.append(d_item)
 
-    # ── 6. Collect warnings from both sources ─────────────────────────────
+   
     all_warnings = list(rain_plan.get("warnings", []))
 
-    # ── 7. Legacy flat fields (populated from the first two plan steps) ───
+    
     basal           = None
     basal_rate      = None
     topdress        = None
@@ -273,7 +276,6 @@ def rescale_confidences(predictions: list) -> list:
         p["confidence"] = round((p["raw_prob"] / total) * 100, 1)
 
     return predictions
-
 
 
 
@@ -449,7 +451,7 @@ def recommend():
     if not district:
         return jsonify({"error": f"Unknown district: {district_name}"}), 400
 
-   
+    
     rainfall_data     = resolve_rainfall(district_name, district)
     annual_mm         = rainfall_data["annual_mm"]
     annual_source     = rainfall_data["annual_source"]
@@ -531,7 +533,7 @@ def recommend():
             "rotationAdvice": rotation_advice,
         })
 
-   
+    
     soil_alerts     = get_soil_alerts(nitrogen, phosphorus, potassium, ph, annual_mm)
     soil_assessment = assess_soil(nitrogen, phosphorus, potassium, ph, organic, moisture)
     rotation_tip    = get_general_rotation_tip(previous_crop)

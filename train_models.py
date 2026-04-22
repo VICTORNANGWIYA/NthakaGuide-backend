@@ -1,8 +1,7 @@
 
-
 import pandas as pd
 import numpy as np
-import pickle
+import joblib          
 import json
 import os
 import warnings
@@ -88,6 +87,7 @@ def train_and_compare(X_tr, X_te, y_tr, y_te,
 
 
 
+
 EXCLUDE = {
     "almond", "apricot", "asparagus", "barley", "beetroot", "blueberry",
     "boysenberry", "cherry", "elderberry", "gooseberry", "kiwi", "oat",
@@ -143,10 +143,9 @@ df_synthetic = pd.DataFrame(synthetic_rows)
 
 
 
-
 banner("Building Merged Crop Dataset")
 
-
+# Dataset A
 df_a = pd.read_csv(os.path.join(DATA_DIR, "Crop_recommendation.csv"))
 df_a.columns = df_a.columns.str.lower().str.strip()
 df_a = df_a[["n","p","k","temperature","humidity","ph","rainfall","label"]].copy()
@@ -173,7 +172,7 @@ df_b["label"] = df_b["label"].replace({
 print(f"  Dataset B (crop_recommendation_dataset): {len(df_b):>6} rows, "
       f"{df_b['label'].nunique()} crops")
 
-
+# Dataset C
 df_c = pd.read_csv(os.path.join(DATA_DIR, "Crop_Recm_Data.csv"))
 df_c.columns = df_c.columns.str.lower().str.strip()
 df_c = df_c[["n","p","k","temperature","humidity","ph","rainfall","label"]].copy()
@@ -207,10 +206,7 @@ print(f"\n  💾 Saved → data/merged_crop_dataset.csv")
 
 
 
-
-
 banner("Model 1 — Crop Recommendation")
-
 
 CROP_FEATURES = ["n", "p", "k", "temperature", "humidity", "ph", "rainfall"]
 
@@ -220,7 +216,6 @@ y_raw  = df_final["label"].values
 crop_encoder = LabelEncoder()
 y_crop       = crop_encoder.fit_transform(y_raw)
 
-
 X_tr, X_te, y_tr, y_te = train_test_split(
     X_crop, y_crop,
     test_size=0.20, random_state=42,
@@ -228,9 +223,9 @@ X_tr, X_te, y_tr, y_te = train_test_split(
 )
 
 crop_scaler = StandardScaler()
-X_tr_sc     = crop_scaler.fit_transform(X_tr)   
+X_tr_sc     = crop_scaler.fit_transform(X_tr)
 X_te_sc     = crop_scaler.transform(X_te)
-X_all_sc    = crop_scaler.transform(X_crop)     
+X_all_sc    = crop_scaler.transform(X_crop)
 
 print(f"\n  Train: {len(X_tr)} | Test: {len(X_te)}")
 print(f"  Features: {CROP_FEATURES}")
@@ -239,9 +234,8 @@ crop_best_name, crop_model, crop_results = train_and_compare(
     X_tr_sc, X_te_sc, y_tr, y_te,
     X_all_sc, y_crop,
     label="Crop",
-    class_weight="balanced",  
+    class_weight="balanced",
 )
-
 
 print("\n  Probability spot-check (top 3 per sample):")
 for i, row in enumerate(crop_model.predict_proba(X_te_sc[:3])):
@@ -258,12 +252,17 @@ if hasattr(crop_model, "feature_importances_"):
                          key=lambda x: -x[1]):
         print(f"    {f:<12} {'█' * int(imp * 50)} {imp*100:.1f}%")
 
+joblib.dump(crop_model,   os.path.join(MDL_DIR, "best_crop_model.pkl"),    compress=3)
+joblib.dump(crop_scaler,  os.path.join(MDL_DIR, "crop_scaler.pkl"),        compress=3)
+joblib.dump(crop_encoder, os.path.join(MDL_DIR, "crop_label_encoder.pkl"), compress=3)
+print("\n  💾 Saved (joblib, compress=3):")
+print("     best_crop_model.pkl | crop_scaler.pkl | crop_label_encoder.pkl")
 
-pickle.dump(crop_model,   open(os.path.join(MDL_DIR, "best_crop_model.pkl"),    "wb"))
-pickle.dump(crop_scaler,  open(os.path.join(MDL_DIR, "crop_scaler.pkl"),        "wb"))
-pickle.dump(crop_encoder, open(os.path.join(MDL_DIR, "crop_label_encoder.pkl"), "wb"))
-print("\n  💾 Saved: best_crop_model.pkl | crop_scaler.pkl | crop_label_encoder.pkl")
 
+for fname in ["best_crop_model.pkl", "crop_scaler.pkl", "crop_label_encoder.pkl"]:
+    path = os.path.join(MDL_DIR, fname)
+    size_mb = os.path.getsize(path) / (1024 * 1024)
+    print(f"     {fname:<35} {size_mb:.2f} MB")
 
 
 
@@ -278,7 +277,6 @@ print(f"  Fertilizers : {df_fert['Fertilizer'].nunique()} classes")
 print(f"  Labels      : {sorted(df_fert['Fertilizer'].unique())}")
 print(f"  Soils       : {sorted(df_fert['Soil'].unique())}")
 print(f"  Crops       : {sorted(df_fert['Crop'].unique())}")
-
 
 print("\n  Fertilizer class distribution:")
 for cls, cnt in df_fert["Fertilizer"].value_counts().items():
@@ -316,21 +314,29 @@ fert_best_name, fert_model, fert_results = train_and_compare(
     X_tr_f_sc, X_te_f_sc, y_tr_f, y_te_f,
     X_all_f_sc, y_fert,
     label="Fertilizer",
-    class_weight=None,   
+    class_weight=None,
 )
 
 print("\n  Per-Fertilizer Classification Report:")
 print(classification_report(y_te_f, fert_model.predict(X_te_f_sc),
                              target_names=fert_encoder.classes_))
 
+# ── Save with joblib (compress=3) ─────────────────────────────────────────
+joblib.dump(fert_model,    os.path.join(MDL_DIR, "best_fert_model.pkl"),     compress=3)
+joblib.dump(fert_scaler,   os.path.join(MDL_DIR, "fert_scaler.pkl"),         compress=3)
+joblib.dump(fert_encoder,  os.path.join(MDL_DIR, "fert_label_encoder.pkl"),  compress=3)
+joblib.dump(soil_enc_fert, os.path.join(MDL_DIR, "soil_type_encoder.pkl"),   compress=3)
+joblib.dump(crop_enc_fert, os.path.join(MDL_DIR, "crop_type_encoder.pkl"),   compress=3)
+print("\n  💾 Saved (joblib, compress=3):")
+print("     best_fert_model.pkl | fert_scaler.pkl | fert_label_encoder.pkl")
+print("     soil_type_encoder.pkl | crop_type_encoder.pkl")
 
-pickle.dump(fert_model,    open(os.path.join(MDL_DIR, "best_fert_model.pkl"),     "wb"))
-pickle.dump(fert_scaler,   open(os.path.join(MDL_DIR, "fert_scaler.pkl"),         "wb"))
-pickle.dump(fert_encoder,  open(os.path.join(MDL_DIR, "fert_label_encoder.pkl"),  "wb"))
-pickle.dump(soil_enc_fert, open(os.path.join(MDL_DIR, "soil_type_encoder.pkl"),   "wb"))
-pickle.dump(crop_enc_fert, open(os.path.join(MDL_DIR, "crop_type_encoder.pkl"),   "wb"))
-print("\n  💾 Saved: best_fert_model.pkl | fert_scaler.pkl | fert_label_encoder.pkl")
-print("           soil_type_encoder.pkl | crop_type_encoder.pkl")
+for fname in ["best_fert_model.pkl", "fert_scaler.pkl", "fert_label_encoder.pkl",
+              "soil_type_encoder.pkl", "crop_type_encoder.pkl"]:
+    path = os.path.join(MDL_DIR, fname)
+    size_mb = os.path.getsize(path) / (1024 * 1024)
+    print(f"     {fname:<35} {size_mb:.2f} MB")
+
 
 
 banner("Exporting Metadata")
@@ -346,7 +352,6 @@ metadata = {
     "training_rows_crop": int(len(df_final)),
     "training_rows_fert": int(len(df_fert)),
 
-   
     "crop_features":      CROP_FEATURES,
     "fert_features":      FERT_FEATURES,
 
@@ -375,7 +380,17 @@ with open(os.path.join(MDL_DIR, "model_metadata.json"), "w") as f:
 
 print("\n  💾 Saved: models/model_metadata.json")
 
+
+
 banner("Training Complete ✅")
+
+# Total model directory size
+total_mb = sum(
+    os.path.getsize(os.path.join(MDL_DIR, f)) / (1024 * 1024)
+    for f in os.listdir(MDL_DIR)
+    if f.endswith(".pkl")
+)
+
 print(f"""
   Models saved to:  backend/models/
 
@@ -386,17 +401,14 @@ print(f"""
   Crop dataset : {len(df_final)} rows, {df_final['label'].nunique()} classes
   Fert dataset : {len(df_fert)} rows, {df_fert['Fertilizer'].nunique()} classes
 
-  
+  Total .pkl size on disk : {total_mb:.2f} MB  (joblib compress=3)
+
   ── After training — verify crop classes in ZONE_CROPS ──────────────────
   python -c "
-  import pickle
-  e = pickle.load(open('models/crop_label_encoder.pkl', 'rb'))
+  import joblib
+  e = joblib.load('models/crop_label_encoder.pkl')
   print('Crop classes:', list(e.classes_))
   "
 
   Next step:  python app.py  →  http://localhost:5000
 """)
-
-
-
-
